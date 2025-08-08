@@ -89,13 +89,37 @@ jobs:
           echo "执行命令: ./main.bin setup_lz4" >> ../../../binary_info.log
           ./main.bin "setup_lz4" 2>&1 | tee -a ../../../binary_info.log
           rm -f main.bin
+
+      - name: 收集 main.bin "setup_lz4" 信息（修复目录缺失）
+        run: |
+          cd src
+          echo "【开始收集】main.bin setup_lz4（修复目录结构）" | tee -a binary_info.log
           
-          # 记录lz4目录文件变化
+          # 关键修复：同步真实内核源码目录结构（解决文件缺失）
+          echo "同步内核源码目录结构..." | tee -a binary_info.log
+          mkdir -p kernel_workspace
+          cd kernel_workspace
+          # 初始化并同步原内核源码（获取真实目录结构）
+          repo init -u https://github.com/FateYin1/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m oneplus_13.xml --depth=1
+          repo sync -c -j$(nproc) --no-tags --force-sync > /dev/null 2>&1
+          cd kernel_platform/common
+          
+          # 执行setup_lz4命令（在真实目录结构中）
+          cp ../../../.github/workflows/Bin/main.bin ./
+          chmod +x main.bin
+          echo "执行命令: ./main.bin setup_lz4" >> ../../../binary_info.log
+          ./main.bin "setup_lz4" 2>&1 | tee -a ../../../binary_info.log
+          rm -f main.bin
+          
+          # 记录lz4目录文件变化（重点关注修改的文件）
           echo "【文件变化】lib/lz4目录内容:" >> ../../../binary_info.log
           ls -la lib/lz4 >> ../../../binary_info.log
+          echo "【文件变化】crypto目录lz4相关文件:" >> ../../../binary_info.log
+          ls -la crypto/lz4* >> ../../../binary_info.log 2>/dev/null
+          echo "【文件变化】f2fs压缩相关文件:" >> ../../../binary_info.log
+          ls -la fs/f2fs/compress* >> ../../../binary_info.log 2>/dev/null
           echo "-------------------------" >> ../../../binary_info.log
           echo "" >> ../../../binary_info.log
-
       - name: 收集 main.bin "setup_suffix" 信息
         run: |
           cd src
