@@ -1,46 +1,40 @@
-- name: 执行并实时监控（修复进程kill错误）
+- name: 执行setup_lz4并收集信息
         run: |
           cd src/$WORKDIR
-          echo "【执行 setup_lz4 并实时监控（修复版）】" | tee -a ../../$LOG_FILE
-          
-          # 确保inotifywait已安装
-          if ! command -v inotifywait &> /dev/null; then
-            echo "安装inotify-tools..." | tee -a ../../$LOG_FILE
-            sudo apt install -y inotify-tools 2>&1 | tee -a ../../$LOG_FILE
-          fi
-          
-          # 启动后台文件监控（添加超时保护）
+          echo "【执行setup_lz4并监控】" | tee -a ../../$LOG_FILE
+
+          # 安装依赖
+          sudo apt-get update
+          sudo apt-get install -y inotify-tools
+
+          # 启动监控
           inotifywait -m -r -e modify,create,delete . > file_changes.log 2>&1 &
           INOTIFY_PID=$!
           echo "监控进程ID: $INOTIFY_PID" | tee -a ../../$LOG_FILE
-          
-          # 执行命令并捕获详细输出
-          echo "执行命令: ./main.bin setup_lz4" | tee -a ../../$LOG_FILE
+
+          # 执行命令
+          echo "执行: ./main.bin setup_lz4" | tee -a ../../$LOG_FILE
           timeout 60s ./main.bin "setup_lz4" > cmd_output.log 2>&1
           EXIT_CODE=$?
-          echo "命令退出码: $EXIT_CODE" | tee -a ../../$LOG_FILE
-          
-          # 安全停止监控（修复kill错误）
-          echo "停止监控进程..." | tee -a ../../$LOG_FILE
+          echo "退出码: $EXIT_CODE" | tee -a ../../$LOG_FILE
+
+          # 停止监控
           if ps -p $INOTIFY_PID > /dev/null; then
-            kill $INOTIFY_PID 2>&1 | tee -a ../../$LOG_FILE
-            echo "监控进程已停止" | tee -a ../../$LOG_FILE
-          else
-            echo "监控进程已自动退出，无需终止" | tee -a ../../$LOG_FILE
+            kill $INOTIFY_PID
           fi
-          
+
           # 记录文件变化
-          echo "【实时监控到的文件变化】" | tee -a ../../$LOG_FILE
+          echo "【文件变化】" | tee -a ../../$LOG_FILE
           if [ -s "file_changes.log" ]; then
             cat file_changes.log | tee -a ../../$LOG_FILE
           else
-            echo "（无文件变化记录）" | tee -a ../../$LOG_FILE
+            echo "无文件变化" | tee -a ../../$LOG_FILE
           fi
-          
+
           # 记录命令输出
-          echo "【命令输出内容】" | tee -a ../../$LOG_FILE
+          echo "【命令输出】" | tee -a ../../$LOG_FILE
           if [ -s "cmd_output.log" ]; then
             cat cmd_output.log | tee -a ../../$LOG_FILE
           else
-            echo "（无命令输出）" | tee -a ../../$LOG_FILE
+            echo "无命令输出" | tee -a ../../$LOG_FILE
           fi
