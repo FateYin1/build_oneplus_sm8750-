@@ -1,99 +1,97 @@
-name: 增强版 setup_lz4 信息收集
+name: setup_lz4 深度信息收集
 on:
   workflow_dispatch:
 
 jobs:
-  collect_lz4_enhanced:
+  lz4_deep_collect:
     runs-on: ubuntu-latest
     env:
       REPO_URL: "https://github.com/showdo/build_oneplus_sm8750.git"
-      LOG_FILE: "setup_lz4_enhanced.log"
+      LOG_FILE: "lz4_deep_collect.log"
       MAIN_BIN_PATH: ".github/workflows/Bin/main.bin"
-      LZ4_WORKDIR: "lz4_workdir"
+      WORKDIR: "lz4_deep_workdir"
 
     steps:
-      - name: 克隆仓库与初始化日志
+      - name: 初始化环境
         run: |
           git clone $REPO_URL src
           cd src
           git pull
-          echo "===== 增强版 setup_lz4 收集日志 =====" > $LOG_FILE
+          echo "===== setup_lz4 深度收集日志 =====" > $LOG_FILE
           echo "开始时间: $(date)" >> $LOG_FILE
-          echo "目标: 捕获 setup_lz4 的文件修改和输出" >> $LOG_FILE
+          echo "目标: 强制捕获 setup_lz4 的所有操作" >> $LOG_FILE
 
-      - name: 准备完整依赖与目录
+      - name: 构建完整内核环境
         run: |
           cd src
-          echo "【准备完整环境】" | tee -a $LOG_FILE
-          # 安装额外调试工具
-          sudo apt install -y tree 2>&1 | tee -a $LOG_FILE
-          # 创建更贴近真实的内核目录结构
-          mkdir -p $LZ4_WORKDIR/{lib/lz4,crypto,fs/f2fs,include/linux}
-          # 创建必要的基础文件
-          touch $LZ4_WORKDIR/lib/lz4/lz4_compress.c
-          touch $LZ4_WORKDIR/fs/f2fs/compress.c
-          touch $LZ4_WORKDIR/include/linux/compression.h
-          # 复制二进制并授权
-          cp $MAIN_BIN_PATH $LZ4_WORKDIR/main.bin
-          chmod 755 $LZ4_WORKDIR/main.bin
-          # 记录初始目录结构
-          tree $LZ4_WORKDIR | tee -a $LOG_FILE
+          echo "【构建内核模拟环境】" | tee -a $LOG_FILE
+          # 创建与真实内核一致的目录结构
+          mkdir -p $WORKDIR/{lib/lz4,crypto,fs/f2fs,include/linux,scripts}
+          # 复制真实内核基础文件（确保路径匹配）
+          curl -o $WORKDIR/lib/lz4/lz4_compress.c https://raw.githubusercontent.com/torvalds/linux/master/lib/lz4/lz4_compress.c
+          curl -o $WORKDIR/fs/f2fs/compress.c https://raw.githubusercontent.com/torvalds/linux/master/fs/f2fs/compress.c
+          curl -o $WORKDIR/include/linux/compression.h https://raw.githubusercontent.com/torvalds/linux/master/include/linux/compression.h
+          # 准备二进制文件
+          cp $MAIN_BIN_PATH $WORKDIR/main.bin
+          chmod 755 $WORKDIR/main.bin
+          # 记录初始文件状态
+          find $WORKDIR -type f -print0 | xargs -0 stat -c "%n %s %y" | tee -a $LOG_FILE
 
-      - name: 执行 setup_lz4 并深度跟踪
+      - name: 执行并实时监控
         run: |
-          cd src
-          echo "【执行 setup_lz4 并跟踪】" | tee -a $LOG_FILE
-          cd $LZ4_WORKDIR
-          # 记录执行前文件哈希（精确检测变化）
-          find . -type f -exec sha256sum {} \; > pre_sha.txt
-          # 执行命令并捕获所有输出（含错误），增加超时保护
-          timeout 60s strace -o lz4_strace.log ./main.bin "setup_lz4" > lz4_output.txt 2>&1
+          cd src/$WORKDIR
+          echo "【执行 setup_lz4 并实时监控】" | tee -a ../../$LOG_FILE
+          
+          # 启动后台文件监控
+          inotifywait -m -r -e modify,create,delete . > file_changes.log 2>&1 &
+          INOTIFY_PID=$!
+          
+          # 执行命令并捕获详细输出
+          echo "执行命令: ./main.bin setup_lz4" | tee -a ../../$LOG_FILE
+          timeout 60s ./main.bin "setup_lz4" > cmd_output.log 2>&1
           EXIT_CODE=$?
-          echo "执行退出码: $EXIT_CODE" | tee -a ../../$LOG_FILE
-          # 记录执行后文件哈希
-          find . -type f -exec sha256sum {} \; > post_sha.txt
-
-          # 分析文件变化
-          echo "【文件变化详情】" | tee -a ../../$LOG_FILE
-          if ! diff pre_sha.txt post_sha.txt > /dev/null; then
-            echo "检测到文件修改:" | tee -a ../../$LOG_FILE
-            diff pre_sha.txt post_sha.txt | grep ">" | awk '{print $3}' | tee -a ../../$LOG_FILE
-            # 输出修改文件的具体内容变化
-            for file in $(diff pre_sha.txt post_sha.txt | grep ">" | awk '{print $3}'); do
-              echo "----- $file 内容变化 -----" | tee -a ../../$LOG_FILE
-              cat "$file" | tee -a ../../$LOG_FILE
-            done
+          echo "命令退出码: $EXIT_CODE" | tee -a ../../$LOG_FILE
+          
+          # 停止监控
+          kill $INOTIFY_PID
+          
+          # 记录文件变化
+          echo "【实时监控到的文件变化】" | tee -a ../../$LOG_FILE
+          if [ -s "file_changes.log" ]; then
+            cat file_changes.log | tee -a ../../$LOG_FILE
           else
-            echo "未检测到文件修改" | tee -a ../../$LOG_FILE
+            echo "（无文件变化记录）" | tee -a ../../$LOG_FILE
+          fi
+          
+          # 记录命令输出
+          echo "【命令输出内容】" | tee -a ../../$LOG_FILE
+          if [ -s "cmd_output.log" ]; then
+            cat cmd_output.log | tee -a ../../$LOG_FILE
+          else
+            echo "（无命令输出）" | tee -a ../../$LOG_FILE
           fi
 
-          # 输出命令原始输出
-          echo "【setup_lz4 输出内容】" | tee -a ../../$LOG_FILE
-          if [ -s "lz4_output.txt" ]; then
-            cat lz4_output.txt | tee -a ../../$LOG_FILE
-          else
-            echo "（无标准输出）" | tee -a ../../$LOG_FILE
-          fi
-
-          # 分析系统调用日志
-          echo "【关键系统调用】" | tee -a ../../$LOG_FILE
-          grep -E "open.*O_WRONLY|write|execve" lz4_strace.log | tee -a ../../$LOG_FILE
-
-      - name: 提取 LZ4 相关配置
+      - name: 二进制行为分析
         run: |
           cd src
-          echo "【LZ4 配置深度提取】" | tee -a $LOG_FILE
-          cd $LZ4_WORKDIR
-          # 搜索所有可能包含LZ4配置的文件
-          echo "搜索 LZ4 相关代码片段:" | tee -a ../../$LOG_FILE
-          grep -r -i "lz4" . 2>/dev/null | tee -a ../../$LOG_FILE
-          # 检查压缩算法配置
-          echo "搜索压缩算法定义:" | tee -a ../../$LOG_FILE
-          grep -r -i "compression" . 2>/dev/null | tee -a ../../$LOG_FILE
+          echo "【二进制行为深度分析】" | tee -a $LOG_FILE
+          # 反编译提取字符串（查找可能的操作路径）
+          echo "main.bin 中包含的路径字符串:" | tee -a $LOG_FILE
+          strings $WORKDIR/main.bin | grep -E "/lib/lz4|/crypto|/f2fs" | tee -a $LOG_FILE
+          
+          # 对比文件内容变化
+          echo "【文件内容变化对比】" | tee -a $LOG_FILE
+          for file in $(find $WORKDIR -type f | grep -v "main.bin"); do
+            echo "----- 检查文件: $file -----" | tee -a $LOG_FILE
+            # 检查是否有LZ4相关修改
+            grep -i "lz4" "$file" | tee -a $LOG_FILE
+            # 检查压缩算法配置
+            grep -i "compress" "$file" | tee -a $LOG_FILE
+          done
 
-      - name: 上传增强版日志
+      - name: 上传深度分析日志
         uses: actions/upload-artifact@v4
         with:
-          name: setup-lz4-enhanced-results
-          path: src/setup_lz4_enhanced.log
+          name: lz4-deep-analysis-results
+          path: src/lz4_deep_collect.log
           retention-days: 30
