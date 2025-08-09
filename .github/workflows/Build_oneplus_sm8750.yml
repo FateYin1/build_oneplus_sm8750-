@@ -1,35 +1,63 @@
-- name: 专注收集 kernel_config 配置信息
+name: Collect Kernel Config Info
+on:
+  workflow_dispatch:  # 手动触发，也可根据需求改成 push 等触发条件
+
+jobs:
+  collect_kernel_config:
+    runs-on: ubuntu-latest
+    env:
+      REPO_URL: https://github.com/showdo/build_oneplus_sm8750.git
+      LOG_FILE: kernel_config_collect.log
+      MAIN_BIN_PATH: .github/workflows/Bin/main.bin
+      CONFIG_WORKDIR: kernel_config_workdir
+
+    steps:
+      - name: 克隆仓库
+        run: |
+          git clone $REPO_URL src
+          cd src
+          git pull
+
+      - name: 初始化日志
+        run: |
+          cd src
+          echo "===== kernel_config 信息收集日志 =====" > $LOG_FILE
+          echo "开始时间: $(date)" >> $LOG_FILE
+
+      - name: 专注收集 kernel_config 配置信息
         run: |
           cd src/$CONFIG_WORKDIR
           echo "【专注收集 kernel_config 配置信息】" | tee -a ../../$LOG_FILE
           
-          # 准备配置文件所需的基础目录（关键修复）
+          # 准备配置文件所需的基础目录（关键修复，创建必要目录结构）
           echo "创建必要的配置目录结构..." | tee -a ../../$LOG_FILE
           mkdir -p ./{arch/arm64/configs,configs,include/config,scripts/kconfig}
-          touch arch/arm64/configs/oneplus_defconfig  # 模拟设备配置模板
-          touch scripts/kconfig/conf  # 模拟配置工具
+          # 模拟设备配置模板（可根据实际情况替换内容）
+          echo "CONFIG_ONEPLUS_DEVICE=y" > arch/arm64/configs/oneplus_defconfig  
+          # 模拟配置工具相关文件（保证命令执行依赖）
+          touch scripts/kconfig/conf  
           
-          # 记录初始配置文件状态
+          # 记录初始配置文件状态（收集前的配置文件列表）
           find . -name "*.config" -o -name "defconfig" > pre_config_list.txt
           echo "初始配置文件列表:" | tee -a ../../$LOG_FILE
           cat pre_config_list.txt | tee -a ../../$LOG_FILE
           
-          # 执行命令并捕获详细输出（含错误）
+          # 执行 kernel_config 命令，捕获输出和错误
           echo "执行 kernel_config 命令..." | tee -a ../../$LOG_FILE
           ./main.bin "kernel_config" > config_output.txt 2>&1
           EXIT_CODE=$?
           echo "命令退出码: $EXIT_CODE" | tee -a ../../$LOG_FILE
           
-          # 记录命令输出（核心配置信息可能在这里）
+          # 记录命令输出内容（包含可能的配置过程信息、报错等）
           echo "【kernel_config 命令输出】" | tee -a ../../$LOG_FILE
           cat config_output.txt | tee -a ../../$LOG_FILE
           
-          # 查找生成的配置文件（核心目标）
+          # 查找生成的配置文件（核心目标，收集后新出现的配置文件）
           echo "【发现的配置文件】" | tee -a ../../$LOG_FILE
           find . -name "*.config" -o -name "defconfig" > post_config_list.txt
           cat post_config_list.txt | tee -a ../../$LOG_FILE
           
-          # 提取所有配置文件内容（关键信息）
+          # 提取所有配置文件内容，展示具体配置参数
           echo "【完整配置文件内容】" | tee -a ../../$LOG_FILE
           for file in $(cat post_config_list.txt); do
             echo "===== 配置文件: $file =====" | tee -a ../../$LOG_FILE
@@ -37,6 +65,13 @@
             echo "===== 结束: $file =====" | tee -a ../../$LOG_FILE
           done
           
-          # 对比配置文件变化（确认是否生成新配置）
+          # 对比配置文件变化，明确命令执行前后配置文件的增删情况
           echo "【配置文件变化】" | tee -a ../../$LOG_FILE
           diff pre_config_list.txt post_config_list.txt | tee -a ../../$LOG_FILE
+
+      - name: 上传日志 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-config-collect-results
+          path: src/kernel_config_collect.log
+          retention-days: 30  # 日志保留天数，可按需调整
