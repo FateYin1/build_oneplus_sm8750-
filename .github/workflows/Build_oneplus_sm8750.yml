@@ -1,4 +1,4 @@
-name: 完整二进制信息收集（修复版）
+name: 完整二进制信息收集（最终修复版）
 on:
   workflow_dispatch:
 
@@ -9,72 +9,114 @@ jobs:
       REPO_URL: "https://github.com/showdo/build_oneplus_sm8750.git"
       DEVICES: "oneplus_13 oneplus_ace5_pro oneplus_13t oneplus_pad_2_pro oneplus_pad_2_pro_New oneplus_ace5_ultra realme_GT7pro realme_GT7pro_Speed"
       LOG_FILE: "binary_info.log"
+      REPO_BIN_URL: "https://storage.googleapis.com/git-repo-downloads/repo"
 
     steps:
-      - name: 克隆原仓库并同步源码
+      - name: 克隆原仓库代码
         run: |
-          # 克隆主仓库
+          # 克隆主仓库并进入目录
           git clone $REPO_URL src
           cd src
           git pull
           echo "原仓库版本: $(git rev-parse --short HEAD)"
           
-          # 初始化日志
+          # 初始化日志文件
           echo "===== 完整信息收集日志 =====" > $LOG_FILE
-          echo "时间: $(date)" >> $LOG_FILE
+          echo "运行时间: $(date)" >> $LOG_FILE
+          echo "系统信息: $(lsb_release -d | cut -f2)" >> $LOG_FILE
           echo "仓库版本: $(git rev-parse --short HEAD)" >> $LOG_FILE
           echo "==========================" >> $LOG_FILE
           echo "" >> $LOG_FILE
 
-      - name: 收集 main.bin setup_device_info（所有机型）
+      - name: 安装核心依赖（含repo工具）
+        run: |
+          cd src
+          echo "【安装依赖开始】" | tee -a $LOG_FILE
+          
+          # 安装系统依赖
+          sudo apt update -y
+          sudo apt install -y curl git python3 pv unzip 2>&1 | tee -a $LOG_FILE
+          
+          # 关键：安装repo工具（修复command not found）
+          echo "安装repo工具..." | tee -a $LOG_FILE
+          curl -sSL $REPO_BIN_URL -o ~/repo
+          chmod +x ~/repo
+          sudo mv ~/repo /usr/local/bin/repo
+          # 验证repo安装
+          if command -v repo &> /dev/null; then
+            echo "repo安装成功，版本: $(repo --version | head -n1)" | tee -a $LOG_FILE
+          else
+            echo "::error::repo安装失败" | tee -a $LOG_FILE
+            exit 1
+          fi
+          
+          echo "-------------------------" >> $LOG_FILE
+          echo "" >> $LOG_FILE
+      - name: 收集 main.bin setup_device_info（变量修复版）
         run: |
           cd src
           echo "【设备信息收集开始】" | tee -a $LOG_FILE
           
           for device in $DEVICES; do
-            echo "----- 机型: $device -----" | tee -a $LOG_FILE
-            unset DEVICES_NAME DEVICE_MOD  # 重置变量
+            echo "----- 处理机型: $device -----" | tee -a $LOG_FILE
+            # 重置变量并创建临时环境文件
+            unset DEVICES_NAME DEVICE_MOD
+            ENV_TEMP=$(mktemp)
             
-            # 执行设备配置
+            # 执行设备配置命令
             cp .github/workflows/Bin/main.bin ./
             chmod +x main.bin
-            echo "执行: ./main.bin setup_device_info $device" >> $LOG_FILE
+            echo "执行命令: ./main.bin setup_device_info $device" >> $LOG_FILE
             ./main.bin "setup_device_info" "$device" 2>&1 | tee -a $LOG_FILE
+            # 导出环境变量到临时文件
+            printenv > $ENV_TEMP
             rm main.bin
             
-            # 记录关键变量
+            # 提取关键变量
+            DEVICES_NAME=$(grep -oP 'DEVICES_NAME=\K.*' $ENV_TEMP | head -n1)
+            DEVICE_MOD=$(grep -oP 'DEVICE_MOD=\K.*' $ENV_TEMP | head -n1)
+            # 备份：从日志提取（应对变量未导出场景）
+            if [ -z "$DEVICES_NAME" ]; then
+              DEVICES_NAME=$(grep -oP "DEVICES_NAME=\K.*" $LOG_FILE | tail -n1)
+              DEVICE_MOD=$(grep -oP "DEVICE_MOD=\K.*" $LOG_FILE | tail -n1)
+            fi
+            
+            # 记录结果
             echo "DEVICES_NAME: ${DEVICES_NAME:-未获取}" >> $LOG_FILE
             echo "DEVICE_MOD: ${DEVICE_MOD:-未获取}" >> $LOG_FILE
+            rm $ENV_TEMP  # 清理临时文件
             echo "-------------------------" >> $LOG_FILE
           done
           echo "" >> $LOG_FILE
-      - name: 收集 main.bin setup_lz4（修复目录结构）
+      - name: 收集 main.bin setup_lz4（源码同步修复版）
         run: |
           cd src
           echo "【setup_lz4 收集开始】" | tee -a $LOG_FILE
           
-          # 关键步骤：同步真实内核源码获取完整目录
-          echo "同步内核源码获取目录结构..." | tee -a $LOG_FILE
+          # 创建工作目录并同步内核源码
+          echo "同步内核源码获取完整目录结构..." | tee -a $LOG_FILE
           mkdir -p kernel_workspace && cd kernel_workspace
-          # 同步oneplus_13的源码（包含完整目录）
-          repo init -u https://github.com/FateYin1/kernel_manifest.git -b oneplus/sm8750 -m oneplus_13.xml --depth=1
-          repo sync -c -j$(nproc) --no-tags --force-sync > sync.log 2>&1
-          cd kernel_platform/common  # 进入源码目录
+          # 初始化repo仓库
+          repo init -u https://github.com/FateYin1/kernel_manifest.git \
+            -b oneplus/sm8750 -m oneplus_13.xml --depth=1 2>&1 | tee -a ../../$LOG_FILE
+          # 同步源码（带进度显示）
+          repo sync -c -j$(nproc) --no-tags --force-sync 2>&1 | pv -l | tee -a ../../$LOG_FILE
           
-          # 执行lz4配置
+          # 进入源码目录执行lz4配置
+          cd kernel_platform/common
           cp ../../../.github/workflows/Bin/main.bin ./
           chmod +x main.bin
-          echo "执行: ./main.bin setup_lz4" >> ../../../$LOG_FILE
+          echo "执行命令: ./main.bin setup_lz4" >> ../../../$LOG_FILE
           ./main.bin "setup_lz4" 2>&1 | tee -a ../../../$LOG_FILE
           rm main.bin
           
-          # 记录文件变化
-          echo "【lz4文件变化】" >> ../../../$LOG_FILE
-          echo "lib/lz4目录:" >> ../../../$LOG_FILE
+          # 记录文件变化（核心目录）
+          echo "【lz4 文件变化】" >> ../../../$LOG_FILE
+          echo "lib/lz4 目录内容:" >> ../../../$LOG_FILE
           ls -la lib/lz4 >> ../../../$LOG_FILE
-          echo "crypto目录lz4文件:" >> ../../../$LOG_FILE
+          echo "crypto 目录lz4文件:" >> ../../../$LOG_FILE
           ls -la crypto/lz4* >> ../../../$LOG_FILE 2>/dev/null
-          echo "f2fs压缩相关文件:" >> ../../../$LOG_FILE
+          echo "f2fs 压缩相关文件:" >> ../../../$LOG_FILE
           ls -la fs/f2fs/compress* >> ../../../$LOG_FILE 2>/dev/null
           echo "-------------------------" >> ../../../$LOG_FILE
           echo "" >> ../../../$LOG_FILE
@@ -83,7 +125,7 @@ jobs:
           cd src
           echo "【setup_suffix 收集开始】" | tee -a $LOG_FILE
           
-          # 获取oneplus_13的DEVICE_MOD
+          # 获取oneplus_13的DEVICE_MOD（用于测试）
           cp .github/workflows/Bin/main.bin ./
           chmod +x main.bin
           ./main.bin "setup_device_info" "oneplus_13" > /dev/null 2>&1
@@ -94,7 +136,7 @@ jobs:
           # 执行suffix配置
           cp .github/workflows/Bin/main.bin ./
           chmod +x main.bin
-          echo "执行: ./main.bin setup_suffix $MOD" >> $LOG_FILE
+          echo "执行命令: ./main.bin setup_suffix $MOD" >> $LOG_FILE
           ./main.bin "setup_suffix" "$MOD" 2>&1 | tee -a $LOG_FILE
           rm main.bin
           
@@ -109,27 +151,34 @@ jobs:
           cd src
           echo "【setup.bin 收集开始】" | tee -a $LOG_FILE
           
-          # 准备KSU目录环境
+          # 准备KSU环境
           cd kernel_workspace/kernel_platform
-          git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git -b susfs-main KernelSU  # 模拟KSU环境
+          git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git -b susfs-main KernelSU
           cd KernelSU
-          touch kernel/Makefile  # 确保文件存在
+          mkdir -p kernel && touch kernel/Makefile  # 确保文件存在
           
           # 执行setup.bin
           cp ../../../.github/workflows/Bin/setup.bin ./
           chmod +x setup.bin
-          echo "执行: ./setup.bin" >> ../../../$LOG_FILE
+          echo "执行命令: ./setup.bin" >> ../../../$LOG_FILE
           ./setup.bin 2>&1 | tee -a ../../../$LOG_FILE
           rm setup.bin
           
-          # 记录KSU版本
-          echo "【KSU版本变量】" >> ../../../$LOG_FILE
+          # 记录KSU版本变量
+          echo "【KSU版本信息】" >> ../../../$LOG_FILE
           echo "KSUVER: ${KSUVER:-未获取}" >> ../../../$LOG_FILE
           echo "-------------------------" >> ../../../$LOG_FILE
+      - name: 整理并上传完整日志
+        run: |
+          cd src
+          echo "【信息收集完成】" | tee -a $LOG_FILE
+          echo "日志大小: $(du -h $LOG_FILE | cut -f1)" | tee -a $LOG_FILE
+          echo "收集时间: $(date)" >> $LOG_FILE
 
-      - name: 上传完整日志
+      - name: 上传日志 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: complete-binary-info
+          name: complete-binary-info-log
           path: src/binary_info.log
-          retention-days: 30  # 日志保留30天
+          retention-days: 30  # 日志保留30天，便于后续分析
+          if-no-files-found: error  # 日志缺失时标记失败
