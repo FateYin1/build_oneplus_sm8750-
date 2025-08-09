@@ -1,97 +1,82 @@
-name: 设备信息收集最终可运行版
+name: 收集 setup_lz4 信息
 on:
   workflow_dispatch:
 
 jobs:
-  device_collect:
+  collect_lz4:
     runs-on: ubuntu-latest
     env:
       REPO_URL: "https://github.com/showdo/build_oneplus_sm8750.git"
-      DEVICES: "oneplus_13 oneplus_ace5_pro oneplus_13t oneplus_pad_2_pro oneplus_pad_2_pro_New oneplus_ace5_ultra realme_GT7pro realme_GT7pro_Speed"
-      LOG_FILE: "device_collect.log"
+      LOG_FILE: "setup_lz4_collect.log"
       MAIN_BIN_PATH: ".github/workflows/Bin/main.bin"
+      LZ4_WORKDIR: "lz4_workdir"  # 专用工作目录
 
     steps:
-      - name: 克隆仓库
+      - name: 克隆仓库与初始化
         run: |
           git clone $REPO_URL src
           cd src
           git pull
-
-      - name: 初始化日志
-        run: |
-          cd src
-          echo "===== 设备信息收集日志 =====" > $LOG_FILE
+          echo "===== setup_lz4 信息收集日志 =====" > $LOG_FILE
           echo "开始时间: $(date)" >> $LOG_FILE
-          echo "设备列表: $DEVICES" >> $LOG_FILE
+          echo "目标命令: ./main.bin setup_lz4" >> $LOG_FILE
 
-      - name: 安装依赖
+      - name: 准备环境
         run: |
           cd src
-          echo "【安装依赖】" | tee -a $LOG_FILE
-          sudo apt update -y
-          sudo apt install -y strace file coreutils grep gawk pv libc6-dev binutils
+          echo "【准备环境】" | tee -a $LOG_FILE
+          # 安装必要工具
+          sudo apt install -y strace diffutils 2>&1 | tee -a $LOG_FILE
+          # 创建工作目录
+          mkdir -p $LZ4_WORKDIR
+          # 复制二进制文件
+          cp $MAIN_BIN_PATH $LZ4_WORKDIR/main.bin
+          chmod +x $LZ4_WORKDIR/main.bin
+          # 创建模拟内核目录结构（匹配main.bin依赖）
+          mkdir -p $LZ4_WORKDIR/{lib/lz4,crypto,fs/f2fs}
+          touch $LZ4_WORKDIR/lib/lz4/placeholder
+          echo "工作目录结构准备完成" | tee -a $LOG_FILE
 
-      - name: 检查二进制文件
+      - name: 执行 setup_lz4 并跟踪
         run: |
           cd src
-          echo "【检查二进制文件】" | tee -a $LOG_FILE
-          if [ ! -f "$MAIN_BIN_PATH" ]; then
-            echo "::error::main.bin不存在" | tee -a $LOG_FILE
-            exit 1
-          fi
-          chmod +x "$MAIN_BIN_PATH"
-          file "$MAIN_BIN_PATH" | tee -a $LOG_FILE
+          echo "【执行 setup_lz4】" | tee -a $LOG_FILE
+          cd $LZ4_WORKDIR
+          # 记录执行前文件状态
+          find . -type f > pre_exec_list.txt
+          # 执行命令并跟踪系统调用
+          strace -o lz4_strace.log ./main.bin "setup_lz4" 2>&1 | tee -a ../../$LOG_FILE
+          # 记录执行后文件状态
+          find . -type f > post_exec_list.txt
+          
+          # 分析文件变化
+          echo "【文件变化分析】" | tee -a ../../$LOG_FILE
+          echo "新增/修改的文件:" | tee -a ../../$LOG_FILE
+          diff pre_exec_list.txt post_exec_list.txt | grep ">" | awk '{print $2}' | tee -a ../../$LOG_FILE
+          
+          # 检查关键目录内容
+          echo "【lib/lz4 目录内容】" | tee -a ../../$LOG_FILE
+          ls -la lib/lz4 | tee -a ../../$LOG_FILE
+          echo "【crypto 目录内容】" | tee -a ../../$LOG_FILE
+          ls -la crypto | tee -a ../../$LOG_FILE
+          echo "【f2fs 压缩相关文件】" | tee -a ../../$LOG_FILE
+          ls -la fs/f2fs | tee -a ../../$LOG_FILE
 
-      - name: 处理所有设备
+      - name: 提取 LZ4 配置信息
         run: |
           cd src
-          echo "【开始处理设备】" | tee -a $LOG_FILE
-          mkdir -p workdir && cd workdir
-          cp ../"$MAIN_BIN_PATH" ./main.bin
-          chmod +x main.bin
-
-          # 设备列表转为数组
-          devices=($DEVICES)
-          total=${#devices[@]}
-          echo "共发现 $total 个设备" | tee -a ../../$LOG_FILE
-
-          # 逐个处理设备
-          for ((i=0; i<total; i++)); do
-            device=${devices[$i]}
-            echo "----- 处理设备 $((i+1))/$total: $device -----" | tee -a ../../$LOG_FILE
-            
-            # 执行命令并记录输出
-            ./main.bin "setup_device_info" "$device" > output.txt 2>&1
-            echo "执行结果: 退出码 $?" | tee -a ../../$LOG_FILE
-            echo "输出内容:" | tee -a ../../$LOG_FILE
-            cat output.txt | tee -a ../../$LOG_FILE
-            
-            # 生成映射信息
-            dev_name=$device
-            dev_mod=$(echo "$device" | grep -o '[0-9]\+' | head -1)
-            if [ -z "$dev_mod" ]; then
-              dev_mod=$((i+1))
-            fi
-            echo "映射信息: DEVICES_NAME=$dev_name, DEVICE_MOD=$dev_mod" | tee -a ../../$LOG_FILE
-          done
-
-          cd .. && rm -rf workdir
-
-      - name: 生成最终映射表
-        run: |
-          cd src
-          echo "【最终设备映射表】" | tee -a $LOG_FILE
-          devices=($DEVICES)
-          for ((i=0; i<${#devices[@]}; i++)); do
-            device=${devices[$i]}
-            dev_mod=$(echo "$device" | grep -o '[0-9]\+' | head -1)
-            [ -z "$dev_mod" ] && dev_mod=$((i+1))
-            echo "$device → $device:$dev_mod" | tee -a $LOG_FILE
+          echo "【LZ4 配置信息提取】" | tee -a $LOG_FILE
+          cd $LZ4_WORKDIR
+          # 搜索可能的配置文件
+          CONFIG_FILES=$(find . -name "*.h" -o -name "*.c" -o -name "Makefile")
+          for file in $CONFIG_FILES; do
+            echo "----- 查看文件: $file -----" | tee -a ../../$LOG_FILE
+            grep -i "lz4" "$file" | tee -a ../../$LOG_FILE  # 提取LZ4相关配置
           done
 
       - name: 上传日志
         uses: actions/upload-artifact@v4
         with:
-          name: device-info-logs
-          path: src/device_collect.log
+          name: setup-lz4-results
+          path: src/setup_lz4_collect.log
+          retention-days: 30
