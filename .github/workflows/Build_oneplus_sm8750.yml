@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       REPO_URL: "https://github.com/showdo/build_oneplus_sm8750.git"
-      DEVICES: "oneplus_13 oneplus_ace5_pro oneplus_13t oneplus_pad_2_pro oneplus_pad_2_pro_New oneplus_ace5_ultra realme_GT7pro realme_GT7pro_Speed"
+      DEVICES: "oneplus 13 oneplus ace5 pro oneplus 13t oneplus pad 2 pro oneplus pad 2 pro New oneplus ace5 ultra realme_GT7pro realme GT7pro Speed"
       LOG_FILE: "device_only_collect.log"
       MAIN_BIN_PATH: ".github/workflows/Bin/main.bin"
 
