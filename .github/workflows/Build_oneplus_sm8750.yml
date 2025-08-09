@@ -52,39 +52,67 @@ jobs:
           
           echo "-------------------------" >> $LOG_FILE
           echo "" >> $LOG_FILE
-      - name: 收集 main.bin setup_device_info（变量修复版）
+      - name: 收集 main.bin setup_device_info（文件搜索版）
         run: |
           cd src
-          echo "【设备信息收集开始】" | tee -a $LOG_FILE
+          echo "【设备信息收集开始（深度修正版）】" | tee -a $LOG_FILE
+          
+          # 关键调整：同步基础源码目录（确保main.bin有正确运行环境）
+          echo "准备基础源码目录..." | tee -a $LOG_FILE
+          mkdir -p base_kernel
+          cd base_kernel
+          repo init -u https://github.com/FateYin1/kernel_manifest.git -b oneplus/sm8750 -m oneplus_13.xml --depth=1 > /dev/null 2>&1
+          repo sync -c -j2 --no-tags --force-sync > /dev/null 2>&1
+          cd ..  # 返回src目录
           
           for device in $DEVICES; do
             echo "----- 处理机型: $device -----" | tee -a $LOG_FILE
-            # 重置变量并创建临时环境文件
             unset DEVICES_NAME DEVICE_MOD
             ENV_TEMP=$(mktemp)
+            FILE_CHANGE_TEMP=$(mktemp)
             
-            # 执行设备配置命令
-            cp .github/workflows/Bin/main.bin ./
-            chmod +x main.bin
-            echo "执行命令: ./main.bin setup_device_info $device" >> $LOG_FILE
-            ./main.bin "setup_device_info" "$device" 2>&1 | tee -a $LOG_FILE
-            # 导出环境变量到临时文件
+            # 记录执行前的文件列表（用于对比变化）
+            find . -type f -print > $FILE_CHANGE_TEMP
+            
+            # 在源码目录中执行main.bin（可能依赖目录结构）
+            cp .github/workflows/Bin/main.bin ./base_kernel
+            chmod +x ./base_kernel/main.bin
+            echo "执行命令: ./base_kernel/main.bin setup_device_info $device" >> $LOG_FILE
+            ./base_kernel/main.bin "setup_device_info" "$device" 2>&1 | tee -a $LOG_FILE
+            
+            # 导出环境变量（再次尝试）
             printenv > $ENV_TEMP
-            rm main.bin
             
-            # 提取关键变量
-            DEVICES_NAME=$(grep -oP 'DEVICES_NAME=\K.*' $ENV_TEMP | head -n1)
-            DEVICE_MOD=$(grep -oP 'DEVICE_MOD=\K.*' $ENV_TEMP | head -n1)
-            # 备份：从日志提取（应对变量未导出场景）
-            if [ -z "$DEVICES_NAME" ]; then
-              DEVICES_NAME=$(grep -oP "DEVICES_NAME=\K.*" $LOG_FILE | tail -n1)
-              DEVICE_MOD=$(grep -oP "DEVICE_MOD=\K.*" $LOG_FILE | tail -n1)
+            # 核心新增：搜索文件变化（main.bin可能写入文件而非环境变量）
+            echo "搜索文件变化中的设备信息..." | tee -a $LOG_FILE
+            find . -type f -print | grep -Fxvf $FILE_CHANGE_TEMP > $FILE_CHANGE_TEMP.new  # 新文件列表
+            echo "新增/修改的文件:" >> $LOG_FILE
+            cat $FILE_CHANGE_TEMP.new >> $LOG_FILE
+            
+            # 检查所有新增/修改文件中是否包含设备信息
+            DEV_INFO_FILE=$(grep -E "device|mod|info" $FILE_CHANGE_TEMP.new | head -n1)
+            if [ -n "$DEV_INFO_FILE" ] && [ -f "$DEV_INFO_FILE" ]; then
+              echo "在文件 $DEV_INFO_FILE 中搜索设备信息:" >> $LOG_FILE
+              cat "$DEV_INFO_FILE" | tee -a $LOG_FILE
+              # 从文件中提取可能的设备标识
+              DEVICES_NAME=$(grep -oP "(?i)device_name.*?\K\w+" "$DEV_INFO_FILE" | head -n1)
+              DEVICE_MOD=$(grep -oP "(?i)device_mod.*?\K\w+" "$DEV_INFO_FILE" | head -n1)
             fi
             
-            # 记录结果
+            # 补充：检查内核配置文件变化（可能直接修改defconfig）
+            if [ -z "$DEVICES_NAME" ]; then
+              echo "检查内核配置文件..." | tee -a $LOG_FILE
+              DEVICES_NAME=$(grep -r "$device" ./base_kernel --include=*.defconfig | awk -F'=' '{print $2}' | head -n1)
+              DEVICE_MOD=$(grep -r -E "MOD|ID" ./base_kernel --include=*.defconfig | grep -v '#' | awk -F'=' '{print $2}' | head -n1)
+            fi
+            
+            # 最终记录结果
             echo "DEVICES_NAME: ${DEVICES_NAME:-未获取}" >> $LOG_FILE
             echo "DEVICE_MOD: ${DEVICE_MOD:-未获取}" >> $LOG_FILE
-            rm $ENV_TEMP  # 清理临时文件
+            
+            # 清理临时文件
+            rm $ENV_TEMP $FILE_CHANGE_TEMP $FILE_CHANGE_TEMP.new
+            rm -f ./base_kernel/main.bin
             echo "-------------------------" >> $LOG_FILE
           done
           echo "" >> $LOG_FILE
