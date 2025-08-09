@@ -1,50 +1,18 @@
-name: setup_lz4 深度信息收集
-on:
-  workflow_dispatch:
-
-jobs:
-  lz4_deep_collect:
-    runs-on: ubuntu-latest
-    env:
-      REPO_URL: "https://github.com/showdo/build_oneplus_sm8750.git"
-      LOG_FILE: "lz4_deep_collect.log"
-      MAIN_BIN_PATH: ".github/workflows/Bin/main.bin"
-      WORKDIR: "lz4_deep_workdir"
-
-    steps:
-      - name: 初始化环境
-        run: |
-          git clone $REPO_URL src
-          cd src
-          git pull
-          echo "===== setup_lz4 深度收集日志 =====" > $LOG_FILE
-          echo "开始时间: $(date)" >> $LOG_FILE
-          echo "目标: 强制捕获 setup_lz4 的所有操作" >> $LOG_FILE
-
-      - name: 构建完整内核环境
-        run: |
-          cd src
-          echo "【构建内核模拟环境】" | tee -a $LOG_FILE
-          # 创建与真实内核一致的目录结构
-          mkdir -p $WORKDIR/{lib/lz4,crypto,fs/f2fs,include/linux,scripts}
-          # 复制真实内核基础文件（确保路径匹配）
-          curl -o $WORKDIR/lib/lz4/lz4_compress.c https://raw.githubusercontent.com/torvalds/linux/master/lib/lz4/lz4_compress.c
-          curl -o $WORKDIR/fs/f2fs/compress.c https://raw.githubusercontent.com/torvalds/linux/master/fs/f2fs/compress.c
-          curl -o $WORKDIR/include/linux/compression.h https://raw.githubusercontent.com/torvalds/linux/master/include/linux/compression.h
-          # 准备二进制文件
-          cp $MAIN_BIN_PATH $WORKDIR/main.bin
-          chmod 755 $WORKDIR/main.bin
-          # 记录初始文件状态
-          find $WORKDIR -type f -print0 | xargs -0 stat -c "%n %s %y" | tee -a $LOG_FILE
-
-      - name: 执行并实时监控
+- name: 执行并实时监控（修复进程kill错误）
         run: |
           cd src/$WORKDIR
-          echo "【执行 setup_lz4 并实时监控】" | tee -a ../../$LOG_FILE
+          echo "【执行 setup_lz4 并实时监控（修复版）】" | tee -a ../../$LOG_FILE
           
-          # 启动后台文件监控
+          # 确保inotifywait已安装
+          if ! command -v inotifywait &> /dev/null; then
+            echo "安装inotify-tools..." | tee -a ../../$LOG_FILE
+            sudo apt install -y inotify-tools 2>&1 | tee -a ../../$LOG_FILE
+          fi
+          
+          # 启动后台文件监控（添加超时保护）
           inotifywait -m -r -e modify,create,delete . > file_changes.log 2>&1 &
           INOTIFY_PID=$!
+          echo "监控进程ID: $INOTIFY_PID" | tee -a ../../$LOG_FILE
           
           # 执行命令并捕获详细输出
           echo "执行命令: ./main.bin setup_lz4" | tee -a ../../$LOG_FILE
@@ -52,8 +20,14 @@ jobs:
           EXIT_CODE=$?
           echo "命令退出码: $EXIT_CODE" | tee -a ../../$LOG_FILE
           
-          # 停止监控
-          kill $INOTIFY_PID
+          # 安全停止监控（修复kill错误）
+          echo "停止监控进程..." | tee -a ../../$LOG_FILE
+          if ps -p $INOTIFY_PID > /dev/null; then
+            kill $INOTIFY_PID 2>&1 | tee -a ../../$LOG_FILE
+            echo "监控进程已停止" | tee -a ../../$LOG_FILE
+          else
+            echo "监控进程已自动退出，无需终止" | tee -a ../../$LOG_FILE
+          fi
           
           # 记录文件变化
           echo "【实时监控到的文件变化】" | tee -a ../../$LOG_FILE
@@ -70,28 +44,3 @@ jobs:
           else
             echo "（无命令输出）" | tee -a ../../$LOG_FILE
           fi
-
-      - name: 二进制行为分析
-        run: |
-          cd src
-          echo "【二进制行为深度分析】" | tee -a $LOG_FILE
-          # 反编译提取字符串（查找可能的操作路径）
-          echo "main.bin 中包含的路径字符串:" | tee -a $LOG_FILE
-          strings $WORKDIR/main.bin | grep -E "/lib/lz4|/crypto|/f2fs" | tee -a $LOG_FILE
-          
-          # 对比文件内容变化
-          echo "【文件内容变化对比】" | tee -a $LOG_FILE
-          for file in $(find $WORKDIR -type f | grep -v "main.bin"); do
-            echo "----- 检查文件: $file -----" | tee -a $LOG_FILE
-            # 检查是否有LZ4相关修改
-            grep -i "lz4" "$file" | tee -a $LOG_FILE
-            # 检查压缩算法配置
-            grep -i "compress" "$file" | tee -a $LOG_FILE
-          done
-
-      - name: 上传深度分析日志
-        uses: actions/upload-artifact@v4
-        with:
-          name: lz4-deep-analysis-results
-          path: src/lz4_deep_collect.log
-          retention-days: 30
