@@ -1,72 +1,42 @@
-name: 收集 kernel_config 配置信息
-on:
-  workflow_dispatch:
-
-jobs:
-  collect_kernel_config:
-    runs-on: ubuntu-latest
-    env:
-      REPO_URL: "https://github.com/showdo/build_oneplus_sm8750.git"
-      LOG_FILE: "kernel_config_collect.log"
-      MAIN_BIN_PATH: ".github/workflows/Bin/main.bin"
-      CONFIG_WORKDIR: "kernel_config_workdir"
-
-    steps:
-      - name: 克隆仓库与初始化日志
-        run: |
-          git clone $REPO_URL src
-          cd src
-          git pull
-          echo "===== kernel_config 信息收集日志 =====" > $LOG_FILE
-          echo "开始时间: $(date)" >> $LOG_FILE
-          echo "目标命令: ./main.bin kernel_config" >> $LOG_FILE
-
-      - name: 准备环境
-        run: |
-          cd src
-          echo "【准备环境】" | tee -a $LOG_FILE
-          # 创建工作目录
-          mkdir -p $CONFIG_WORKDIR/{arch/arm64/configs,configs}
-          # 复制二进制文件
-          cp $MAIN_BIN_PATH $CONFIG_WORKDIR/main.bin
-          chmod +x $CONFIG_WORKDIR/main.bin
-          # 创建模拟配置文件（匹配可能的依赖）
-          touch $CONFIG_WORKDIR/arch/arm64/configs/defconfig
-          echo "工作目录结构准备完成" | tee -a $LOG_FILE
-
-      - name: 执行 kernel_config 并记录
+- name: 专注收集 kernel_config 配置信息
         run: |
           cd src/$CONFIG_WORKDIR
-          echo "【执行 kernel_config】" | tee -a ../../$LOG_FILE
+          echo "【专注收集 kernel_config 配置信息】" | tee -a ../../$LOG_FILE
           
-          # 记录执行前文件状态
-          find . -type f > pre_config_files.txt
+          # 准备配置文件所需的基础目录（关键修复）
+          echo "创建必要的配置目录结构..." | tee -a ../../$LOG_FILE
+          mkdir -p ./{arch/arm64/configs,configs,include/config,scripts/kconfig}
+          touch arch/arm64/configs/oneplus_defconfig  # 模拟设备配置模板
+          touch scripts/kconfig/conf  # 模拟配置工具
           
-          # 执行命令并捕获输出
+          # 记录初始配置文件状态
+          find . -name "*.config" -o -name "defconfig" > pre_config_list.txt
+          echo "初始配置文件列表:" | tee -a ../../$LOG_FILE
+          cat pre_config_list.txt | tee -a ../../$LOG_FILE
+          
+          # 执行命令并捕获详细输出（含错误）
+          echo "执行 kernel_config 命令..." | tee -a ../../$LOG_FILE
           ./main.bin "kernel_config" > config_output.txt 2>&1
-          echo "命令退出码: $?" | tee -a ../../$LOG_FILE
+          EXIT_CODE=$?
+          echo "命令退出码: $EXIT_CODE" | tee -a ../../$LOG_FILE
           
-          # 记录执行后文件状态
-          find . -type f > post_config_files.txt
-          
-          # 记录输出内容
-          echo "【命令输出】" | tee -a ../../$LOG_FILE
+          # 记录命令输出（核心配置信息可能在这里）
+          echo "【kernel_config 命令输出】" | tee -a ../../$LOG_FILE
           cat config_output.txt | tee -a ../../$LOG_FILE
           
-          # 记录配置文件变化
-          echo "【配置文件变化】" | tee -a ../../$LOG_FILE
-          diff pre_config_files.txt post_config_files.txt | tee -a ../../$LOG_FILE
+          # 查找生成的配置文件（核心目标）
+          echo "【发现的配置文件】" | tee -a ../../$LOG_FILE
+          find . -name "*.config" -o -name "defconfig" > post_config_list.txt
+          cat post_config_list.txt | tee -a ../../$LOG_FILE
           
-          # 提取生成的配置文件内容
-          echo "【生成的配置文件内容】" | tee -a ../../$LOG_FILE
-          for file in $(find . -name "*.config" -o -name "defconfig"); do
-            echo "----- $file -----" | tee -a ../../$LOG_FILE
+          # 提取所有配置文件内容（关键信息）
+          echo "【完整配置文件内容】" | tee -a ../../$LOG_FILE
+          for file in $(cat post_config_list.txt); do
+            echo "===== 配置文件: $file =====" | tee -a ../../$LOG_FILE
             cat "$file" | tee -a ../../$LOG_FILE
+            echo "===== 结束: $file =====" | tee -a ../../$LOG_FILE
           done
-
-      - name: 上传日志
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-config-collection-results
-          path: src/kernel_config_collect.log
-          retention-days: 30
+          
+          # 对比配置文件变化（确认是否生成新配置）
+          echo "【配置文件变化】" | tee -a ../../$LOG_FILE
+          diff pre_config_list.txt post_config_list.txt | tee -a ../../$LOG_FILE
