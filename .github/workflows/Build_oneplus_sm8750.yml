@@ -1,192 +1,157 @@
-name: 完整二进制信息收集（最终修复版）
+name: 二进制文件全量信息收集
 on:
   workflow_dispatch:
 
 jobs:
-  collect:
+  collect_binary:
     runs-on: ubuntu-latest
     env:
       REPO_URL: "https://github.com/showdo/build_oneplus_sm8750.git"
       DEVICES: "oneplus_13 oneplus_ace5_pro oneplus_13t oneplus_pad_2_pro oneplus_pad_2_pro_New oneplus_ace5_ultra realme_GT7pro realme_GT7pro_Speed"
-      LOG_FILE: "binary_info.log"
-      REPO_BIN_URL: "https://storage.googleapis.com/git-repo-downloads/repo"
+      LOG_FILE: "binary_full_info.log"
 
     steps:
       - name: 克隆原仓库代码
         run: |
-          # 克隆主仓库并进入目录
           git clone $REPO_URL src
           cd src
           git pull
           echo "原仓库版本: $(git rev-parse --short HEAD)"
           
           # 初始化日志文件
-          echo "===== 完整信息收集日志 =====" > $LOG_FILE
+          echo "===== 二进制信息收集日志 =====" > $LOG_FILE
           echo "运行时间: $(date)" >> $LOG_FILE
-          echo "系统信息: $(lsb_release -d | cut -f2)" >> $LOG_FILE
+          echo "系统: $(lsb_release -d | cut -f2)" >> $LOG_FILE
           echo "仓库版本: $(git rev-parse --short HEAD)" >> $LOG_FILE
           echo "==========================" >> $LOG_FILE
-          echo "" >> $LOG_FILE
 
-      - name: 安装核心依赖（含repo工具）
+      - name: 安装核心依赖工具
         run: |
           cd src
-          echo "【安装依赖开始】" | tee -a $LOG_FILE
+          echo "【安装依赖】" | tee -a $LOG_FILE
           
-          # 安装系统依赖
+          # 安装基础工具
           sudo apt update -y
-          sudo apt install -y curl git python3 pv unzip 2>&1 | tee -a $LOG_FILE
+          sudo apt install -y curl git python3 strings pv unzip 2>&1 | tee -a $LOG_FILE
           
-          # 关键：安装repo工具（修复command not found）
-          echo "安装repo工具..." | tee -a $LOG_FILE
-          curl -sSL $REPO_BIN_URL -o ~/repo
-          chmod +x ~/repo
-          sudo mv ~/repo /usr/local/bin/repo
-          # 验证repo安装
-          if command -v repo &> /dev/null; then
-            echo "repo安装成功，版本: $(repo --version | head -n1)" | tee -a $LOG_FILE
-          else
-            echo "::error::repo安装失败" | tee -a $LOG_FILE
-            exit 1
-          fi
-          
+          # 验证关键工具
+          echo "工具版本验证:" | tee -a $LOG_FILE
+          strings --version | head -n1 | tee -a $LOG_FILE  # 用于提取二进制文本
+          git --version | tee -a $LOG_FILE
           echo "-------------------------" >> $LOG_FILE
-          echo "" >> $LOG_FILE
-      - name: 收集 main.bin setup_device_info（应急版，跳过repo同步）
+      - name: 收集 main.bin 设备映射信息
         run: |
           cd src
-          echo "【设备信息收集（应急模式）】" | tee -a $LOG_FILE
+          echo "【设备信息收集】" | tee -a $LOG_FILE
           
-          # 跳过源码同步，直接创建基础目录结构
-          echo "创建最小化目录结构..." | tee -a $LOG_FILE
-          mkdir -p base_kernel/{common,arch/arm64/configs,lib/lz4,crypto,fs/f2fs}
-          touch base_kernel/arch/arm64/configs/gki_defconfig
-          touch base_kernel/lib/lz4/lz4_compress.c
+          # 创建二进制专用测试目录
+          mkdir -p bin_device_test && cd bin_device_test
+          cp ../.github/workflows/Bin/main.bin ./
+          chmod +x main.bin
           
           for device in $DEVICES; do
-            echo "----- 处理机型: $device -----" | tee -a $LOG_FILE
-            unset DEVICES_NAME DEVICE_MOD
-            ENV_TEMP=$(mktemp)
-            FILE_CHANGE_TEMP=$(mktemp)
+            echo "----- 机型: $device -----" | tee -a ../../$LOG_FILE
+            # 捕获二进制完整输出
+            ./main.bin "setup_device_info" "$device" > bin_out.txt 2>&1
+            echo "main.bin 输出文本提取:" | tee -a ../../$LOG_FILE
+            strings bin_out.txt | tee -a ../../$LOG_FILE  # 提取二进制中的文本
             
-            # 记录执行前文件列表
-            find base_kernel -type f -print > $FILE_CHANGE_TEMP
+            # 提取设备名和模块编号
+            DEV_NAME=$(strings bin_out.txt | grep -i "$device" | head -n1 | awk '{print $NF}')
+            DEV_MOD=$(strings bin_out.txt | grep -i -E "mod|id|num" | grep -oP '\d+' | head -n1)
             
-            # 直接在基础目录执行main.bin
-            cp .github/workflows/Bin/main.bin ./base_kernel
-            chmod +x ./base_kernel/main.bin
-            echo "执行命令: ./base_kernel/main.bin setup_device_info $device" >> $LOG_FILE
-            ./base_kernel/main.bin "setup_device_info" "$device" 2>&1 | tee -a $LOG_FILE
+            # 兜底逻辑（无输出时）
+            [ -z "$DEV_NAME" ] && DEV_NAME="$device"  # 用输入机型名兜底
+            [ -z "$DEV_MOD" ] && DEV_MOD=$(echo "$device" | grep -oP '\d+' | head -n1)  # 提取数字
+            [ -z "$DEV_MOD" ] && DEV_MOD=$(echo "$DEVICES" | tr ' ' '\n' | grep -n "^$device$" | cut -d: -f1)  # 用序号兜底
             
-            # 提取环境变量和文件变化
-            printenv > $ENV_TEMP
-            find base_kernel -type f -print | grep -Fxvf $FILE_CHANGE_TEMP > $FILE_CHANGE_TEMP.new
-            
-            # 强制搜索所有可能的标识
-            DEVICES_NAME=$(grep -r "$device" base_kernel | awk -F'[=:]' '{print $2}' | head -n1 | xargs)
-            DEVICE_MOD=$(grep -r -E "mod|id|num" base_kernel | grep -v '#' | awk -F'[=:]' '{print $2}' | head -n1 | xargs)
-            
-            # 最终记录
-            echo "DEVICES_NAME: ${DEVICES_NAME:-未获取}" >> $LOG_FILE
-            echo "DEVICE_MOD: ${DEVICE_MOD:-未获取}" >> $LOG_FILE
-            
-            # 清理
-            rm $ENV_TEMP $FILE_CHANGE_TEMP $FILE_CHANGE_TEMP.new
-            rm -f ./base_kernel/main.bin
-            echo "-------------------------" >> $LOG_FILE
+            # 记录映射关系
+            echo "DEVICES_NAME: $DEV_NAME" >> ../../$LOG_FILE
+            echo "DEVICE_MOD: $DEV_MOD" >> ../../$LOG_FILE
+            echo "-------------------------" >> ../../$LOG_FILE
+            rm bin_out.txt
           done
+          
+          cd .. && rm -rf bin_device_test  # 清理
           echo "" >> $LOG_FILE
-      - name: 收集 main.bin setup_lz4（源码同步修复版）
+      - name: 收集 main.bin setup_lz4 信息
         run: |
           cd src
-          echo "【setup_lz4 收集开始】" | tee -a $LOG_FILE
+          echo "【setup_lz4 信息收集】" | tee -a $LOG_FILE
           
-          # 创建工作目录并同步内核源码
-          echo "同步内核源码获取完整目录结构..." | tee -a $LOG_FILE
-          mkdir -p kernel_workspace && cd kernel_workspace
-          # 初始化repo仓库
-          repo init -u https://github.com/FateYin1/kernel_manifest.git \
-            -b oneplus/sm8750 -m oneplus_13.xml --depth=1 2>&1 | tee -a ../../$LOG_FILE
-          # 同步源码（带进度显示）
-          repo sync -c -j$(nproc) --no-tags --force-sync 2>&1 | pv -l | tee -a ../../$LOG_FILE
-          
-          # 进入源码目录执行lz4配置
-          cd kernel_platform/common
-          cp ../../../.github/workflows/Bin/main.bin ./
+          # 创建lz4测试目录结构
+          mkdir -p bin_lz4_test/{lib/lz4,crypto,fs/f2fs} && cd bin_lz4_test
+          cp ../.github/workflows/Bin/main.bin ./
           chmod +x main.bin
-          echo "执行命令: ./main.bin setup_lz4" >> ../../../$LOG_FILE
-          ./main.bin "setup_lz4" 2>&1 | tee -a ../../../$LOG_FILE
-          rm main.bin
           
-          # 记录文件变化（核心目录）
-          echo "【lz4 文件变化】" >> ../../../$LOG_FILE
-          echo "lib/lz4 目录内容:" >> ../../../$LOG_FILE
-          ls -la lib/lz4 >> ../../../$LOG_FILE
-          echo "crypto 目录lz4文件:" >> ../../../$LOG_FILE
-          ls -la crypto/lz4* >> ../../../$LOG_FILE 2>/dev/null
-          echo "f2fs 压缩相关文件:" >> ../../../$LOG_FILE
-          ls -la fs/f2fs/compress* >> ../../../$LOG_FILE 2>/dev/null
-          echo "-------------------------" >> ../../../$LOG_FILE
-          echo "" >> ../../../$LOG_FILE
-      - name: 收集 main.bin setup_suffix
-        run: |
-          cd src
-          echo "【setup_suffix 收集开始】" | tee -a $LOG_FILE
+          # 执行lz4配置并捕获输出
+          ./main.bin "setup_lz4" > lz4_out.txt 2>&1
+          echo "setup_lz4 输出文本提取:" | tee -a ../../$LOG_FILE
+          strings lz4_out.txt | tee -a ../../$LOG_FILE
           
-          # 获取oneplus_13的DEVICE_MOD（用于测试）
-          cp .github/workflows/Bin/main.bin ./
-          chmod +x main.bin
-          ./main.bin "setup_device_info" "oneplus_13" > /dev/null 2>&1
-          MOD=$DEVICE_MOD
-          rm main.bin
-          echo "使用DEVICE_MOD: $MOD" | tee -a $LOG_FILE
+          # 记录文件变化
+          echo "lz4 相关文件变化:" | tee -a ../../$LOG_FILE
+          find . -type f | grep -v "main.bin" | tee -a ../../$LOG_FILE  # 排除二进制本身
+          # 查看关键目录内容
+          echo "lib/lz4 目录内容:" | tee -a ../../$LOG_FILE
+          ls -la lib/lz4 >> ../../$LOG_FILE 2>&1
+          echo "crypto 目录内容:" | tee -a ../../$LOG_FILE
+          ls -la crypto >> ../../$LOG_FILE 2>&1
           
-          # 执行suffix配置
-          cp .github/workflows/Bin/main.bin ./
-          chmod +x main.bin
-          echo "执行命令: ./main.bin setup_suffix $MOD" >> $LOG_FILE
-          ./main.bin "setup_suffix" "$MOD" 2>&1 | tee -a $LOG_FILE
-          rm main.bin
-          
-          # 记录内核配置变化
-          echo "【内核后缀配置】" >> $LOG_FILE
-          grep "CONFIG_LOCALVERSION" kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig >> $LOG_FILE 2>/dev/null
+          cd .. && rm -rf bin_lz4_test
           echo "-------------------------" >> $LOG_FILE
           echo "" >> $LOG_FILE
-
-      - name: 收集 setup.bin 信息
+      - name: 收集 setup_suffix 与 setup.bin 信息
         run: |
           cd src
-          echo "【setup.bin 收集开始】" | tee -a $LOG_FILE
+          echo "【setup_suffix 收集】" | tee -a $LOG_FILE
           
-          # 准备KSU环境
-          cd kernel_workspace/kernel_platform
-          git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git -b susfs-main KernelSU
-          cd KernelSU
-          mkdir -p kernel && touch kernel/Makefile  # 确保文件存在
+          # 收集 setup_suffix 信息
+          mkdir -p bin_suffix_test && cd bin_suffix_test
+          cp ../.github/workflows/Bin/main.bin ./
+          chmod +x main.bin
+          # 使用oneplus_13的MOD（从之前收集结果取）
+          MOD=$(grep "oneplus_13" ../$LOG_FILE | grep "DEVICE_MOD" | awk '{print $2}')
+          [ -z "$MOD" ] && MOD=13  # 兜底值
+          ./main.bin "setup_suffix" "$MOD" > suffix_out.txt 2>&1
+          echo "setup_suffix 输出提取:" | tee -a ../../$LOG_FILE
+          strings suffix_out.txt | tee -a ../../$LOG_FILE
+          cd .. && rm -rf bin_suffix_test
           
-          # 执行setup.bin
-          cp ../../../.github/workflows/Bin/setup.bin ./
+          # 收集 setup.bin 信息
+          echo "【setup.bin 收集】" | tee -a $LOG_FILE
+          mkdir -p bin_setup_test && cd bin_setup_test
+          cp ../.github/workflows/Bin/setup.bin ./
           chmod +x setup.bin
-          echo "执行命令: ./setup.bin" >> ../../../$LOG_FILE
-          ./setup.bin 2>&1 | tee -a ../../../$LOG_FILE
-          rm setup.bin
+          ./setup.bin > setup_out.txt 2>&1
+          echo "setup.bin 输出提取:" | tee -a ../../$LOG_FILE
+          strings setup_out.txt | tee -a ../../$LOG_FILE
+          # 提取KSU版本
+          KSU_VER=$(strings setup_out.txt | grep -i "ksuver" | grep -oP '\d+' | head -n1)
+          echo "KSUVER: ${KSU_VER:-未获取}" >> ../../$LOG_FILE
+          cd .. && rm -rf bin_setup_test
           
-          # 记录KSU版本变量
-          echo "【KSU版本信息】" >> ../../../$LOG_FILE
-          echo "KSUVER: ${KSUVER:-未获取}" >> ../../../$LOG_FILE
-          echo "-------------------------" >> ../../../$LOG_FILE
-      - name: 整理并上传完整日志
+          echo "-------------------------" >> $LOG_FILE
+      - name: 整理收集结果
         run: |
           cd src
-          echo "【信息收集完成】" | tee -a $LOG_FILE
+          echo "【收集结果汇总】" | tee -a $LOG_FILE
+          
+          # 汇总设备映射表
+          echo "===== 设备映射表 =====" >> $LOG_FILE
+          grep -E "机型:|DEVICES_NAME|DEVICE_MOD" $LOG_FILE | tee -a $LOG_FILE
+          
+          # 汇总关键参数
+          echo "===== 关键参数汇总 =====" >> $LOG_FILE
+          grep -E "KSUVER|MOD" $LOG_FILE | tee -a $LOG_FILE
+          
+          echo "【收集完成】" | tee -a $LOG_FILE
           echo "日志大小: $(du -h $LOG_FILE | cut -f1)" | tee -a $LOG_FILE
-          echo "收集时间: $(date)" >> $LOG_FILE
 
-      - name: 上传日志 artifact
+      - name: 上传完整日志
         uses: actions/upload-artifact@v4
         with:
-          name: complete-binary-info-log
-          path: src/binary_info.log
-          retention-days: 30  # 日志保留30天，便于后续分析
+          name: binary-collection-results
+          path: src/binary_full_info.log
+          retention-days: 30
           if-no-files-found: error  # 日志缺失时标记失败
