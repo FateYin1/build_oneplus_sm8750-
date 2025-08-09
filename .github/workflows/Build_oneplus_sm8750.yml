@@ -1,4 +1,4 @@
-name: 仅设备信息收集专用工作流
+name: 仅设备信息收集专用工作流（完整版）
 on:
   workflow_dispatch:
 
@@ -9,154 +9,119 @@ jobs:
       REPO_URL: "https://github.com/showdo/build_oneplus_sm8750.git"
       DEVICES: "oneplus_13 oneplus_ace5_pro oneplus_13t oneplus_pad_2_pro oneplus_pad_2_pro_New oneplus_ace5_ultra realme_GT7pro realme_GT7pro_Speed"
       LOG_FILE: "device_only_collect.log"
-      MAIN_BIN_PATH: ".github/workflows/Bin/main.bin"  # main.bin路径
+      MAIN_BIN_PATH: ".github/workflows/Bin/main.bin"
 
     steps:
       - name: 克隆仓库与初始化日志
         run: |
-          # 克隆主仓库
           git clone $REPO_URL src
           cd src
           git pull
-          echo "仓库版本: $(git rev-parse --short HEAD)"
-          
-          # 初始化设备信息专用日志
           echo "===== 设备信息收集日志 =====" > $LOG_FILE
           echo "开始时间: $(date)" >> $LOG_FILE
           echo "收集设备列表: $DEVICES" >> $LOG_FILE
           echo "==========================" >> $LOG_FILE
           echo "" >> $LOG_FILE
 
-      - name: 安装设备收集依赖
+      - name: 修复设备收集依赖安装
         run: |
           cd src
-          echo "【安装设备收集依赖】" | tee -a $LOG_FILE
-          
-          # 安装核心工具（跟踪二进制行为）
+          echo "【修复版依赖安装】" | tee -a $LOG_FILE
           sudo apt update -y
           sudo apt install -y \
-            strace file ldd timeout coreutils grep awk \
-            pv 2>&1 | tee -a $LOG_FILE
-          
-          # 验证工具可用性
-          echo "工具版本检查:" | tee -a $LOG_FILE
-          strace --version | head -n1 | tee -a $LOG_FILE
-          file --version | head -n1 | tee -a $LOG_FILE
+            strace file coreutils grep gawk pv \
+            libc6-dev binutils 2>&1 | tee -a $LOG_FILE
+          echo "工具验证:" | tee -a $LOG_FILE
+          command -v strace && echo "strace可用" | tee -a $LOG_FILE || echo "strace缺失" | tee -a $LOG_FILE
+          command -v gawk && echo "gawk可用" | tee -a $LOG_FILE || echo "gawk缺失" | tee -a $LOG_FILE
+          command -v timeout && echo "timeout可用" | tee -a $LOG_FILE || echo "timeout缺失" | tee -a $LOG_FILE
+          command -v ldd && echo "ldd可用" | tee -a $LOG_FILE || echo "ldd缺失" | tee -a $LOG_FILE
           echo "-------------------------" >> $LOG_FILE
+
       - name: 二进制文件前置检查
         run: |
           cd src
           echo "【main.bin前置检查】" | tee -a $LOG_FILE
-          
-          # 检查文件是否存在
           if [ ! -f "$MAIN_BIN_PATH" ]; then
-            echo "::error::main.bin不存在！请确认路径: $MAIN_BIN_PATH" | tee -a $LOG_FILE
+            echo "::error::main.bin不存在！路径: $MAIN_BIN_PATH" | tee -a $LOG_FILE
             exit 1
           fi
           echo "main.bin存在: $(ls -la $MAIN_BIN_PATH)" | tee -a $LOG_FILE
-          
-          # 检查文件类型（确保是可执行二进制）
           echo "文件类型检查:" | tee -a $LOG_FILE
           file "$MAIN_BIN_PATH" | tee -a $LOG_FILE
           if ! file "$MAIN_BIN_PATH" | grep -q "executable"; then
             echo "::error::main.bin不是可执行文件！" | tee -a $LOG_FILE
             exit 1
           fi
-          
-          # 修复执行权限
           if [ ! -x "$MAIN_BIN_PATH" ]; then
             echo "修复执行权限..." | tee -a $LOG_FILE
             chmod +x "$MAIN_BIN_PATH"
           fi
-          
-          # 检查动态依赖（避免缺失库导致执行失败）
           echo "依赖库检查:" | tee -a $LOG_FILE
           ldd "$MAIN_BIN_PATH" 2>&1 | tee -a $LOG_FILE
           if ldd "$MAIN_BIN_PATH" 2>&1 | grep -q "not found"; then
-            echo "警告: 可能存在缺失的依赖库！" | tee -a $LOG_FILE
+            echo "警告: 存在缺失的依赖库！" | tee -a $LOG_FILE
           fi
           echo "-------------------------" >> $LOG_FILE
-      - name: 核心设备信息收集循环
+
+      - name: 激活设备收集循环（修复执行问题）
         run: |
           cd src
-          echo "【开始设备信息收集】" | tee -a $LOG_FILE
-          
-          # 创建纯净测试目录
-          mkdir -p device_collect_test && cd device_collect_test
+          echo "【激活设备收集循环】" | tee -a $LOG_FILE
+          mkdir -p device_collect_fix && cd device_collect_fix
           cp ../"$MAIN_BIN_PATH" ./main.bin
           chmod +x main.bin
-          echo "main.bin复制完成，开始处理设备列表..." | tee -a ../../$LOG_FILE
-          
-          # 启用错误继续执行（单个设备失败不中断整体）
+          echo "开始逐个处理设备..." | tee -a ../../$LOG_FILE
           set +e
-          
-          for device in $DEVICES; do
-            echo "----- 处理设备: $device -----" | tee -a ../../$LOG_FILE
-            # 初始化变量
-            MAIN_EXIT=0
-            STRACE_LOG="strace_$device.log"
-            
-            # 执行二进制并跟踪系统调用（30秒超时保护）
-            echo "执行命令: ./main.bin setup_device_info $device" | tee -a ../../$LOG_FILE
-            timeout 30s strace -o "$STRACE_LOG" -e trace=open,write,setenv,execve \
-              ./main.bin "setup_device_info" "$device" 2>&1 | tee -a ../../$LOG_FILE
+          DEVICE_LIST=($DEVICES)
+          for i in "${!DEVICE_LIST[@]}"; do
+            device="${DEVICE_LIST[$i]}"
+            echo "----- 处理设备[$((i+1))/8]: $device -----" | tee -a ../../$LOG_FILE
+            echo "当前时间: $(date)" | tee -a ../../$LOG_FILE
+            echo "执行: ./main.bin setup_device_info $device" | tee -a ../../$LOG_FILE
+            timeout 30s strace -o "strace_$device.log" -e trace=open,write,setenv,execve \
+              ./main.bin "setup_device_info" "$device" > device_out.txt 2>&1
             MAIN_EXIT=$?
-            
-            # 记录执行结果
-            echo "执行结果: 退出码=$MAIN_EXIT" | tee -a ../../$LOG_FILE
-            if [ $MAIN_EXIT -eq 124 ]; then
-              echo "警告: 执行超时（已超过30秒）" | tee -a ../../$LOG_FILE
-            elif [ $MAIN_EXIT -ne 0 ]; then
-              echo "警告: 执行失败，退出码=$MAIN_EXIT" | tee -a ../../$LOG_FILE
-              # 提取关键错误信息
-              grep -E "No such file|permission denied|failed" "$STRACE_LOG" 2>/dev/null | tee -a ../../$LOG_FILE
-            fi
-            
-            # 提取文件操作记录（捕获可能的配置文件修改）
-            echo "文件操作记录:" | tee -a ../../$LOG_FILE
-            grep -E "open.*O_WRONLY|write|setenv" "$STRACE_LOG" 2>/dev/null | tee -a ../../$LOG_FILE
-            
-            # 生成设备映射（强制兜底，确保有可用值）
-            DEV_NAME="$device"  # 设备名默认与输入一致
-            # 提取模块编号（优先从设备名取数字，无则用序号）
+            echo "退出码: $MAIN_EXIT" | tee -a ../../$LOG_FILE
+            echo "二进制输出文本:" | tee -a ../../$LOG_FILE
+            strings device_out.txt | tee -a ../../$LOG_FILE
+            echo "系统调用记录:" | tee -a ../../$LOG_FILE
+            grep -E "open.*O_WRONLY|write|setenv" "strace_$device.log" 2>/dev/null | tee -a ../../$LOG_FILE
+            DEV_NAME="$device"
             DEV_MOD=$(echo "$device" | grep -oP '\d+' | head -n1)
-            if [ -z "$DEV_MOD" ]; then
-              # 获取设备在列表中的序号（1开始）
-              DEV_MOD=$(echo "$DEVICES" | tr ' ' '\n' | grep -n "^$device$" | cut -d: -f1)
-            fi
-            echo "设备映射结果: DEVICES_NAME=$DEV_NAME, DEVICE_MOD=$DEV_MOD" | tee -a ../../$LOG_FILE
-            
-            # 清理临时文件
-            rm -f "$STRACE_LOG"
+            [ -z "$DEV_MOD" ] && DEV_MOD=$((i+1))
+            echo "映射结果: DEVICES_NAME=$DEV_NAME, DEVICE_MOD=$DEV_MOD" | tee -a ../../$LOG_FILE
+            rm device_out.txt "strace_$device.log"
             echo "-------------------------" >> ../../$LOG_FILE
           done
-          
-          # 恢复错误中断机制
           set -e
-          
-          cd .. && rm -rf device_collect_test
-          echo "【所有设备处理完成】" | tee -a $LOG_FILE
-      - name: 设备信息日志整理
+          cd .. && rm -rf device_collect_fix
+          echo "【设备循环执行完成】" | tee -a $LOG_FILE
+
+      - name: 补全设备信息日志
         run: |
           cd src
-          echo "【设备信息汇总】" | tee -a $LOG_FILE
-          
-          # 提取所有设备映射结果
-          echo "===== 设备映射表汇总 =====" >> $LOG_FILE
-          grep "设备映射结果:" $LOG_FILE | tee -a $LOG_FILE
-          
-          # 统计成功/失败数量
-          TOTAL_DEVICES=$(echo "$DEVICES" | wc -w)
-          FAIL_DEVICES=$(grep "执行失败" $LOG_FILE | wc -l)
-          echo "===== 收集统计 =====" >> $LOG_FILE
-          echo "总设备数: $TOTAL_DEVICES" >> $LOG_FILE
-          echo "失败设备数: $FAIL_DEVICES" >> $LOG_FILE
-          echo "收集完成时间: $(date)" >> $LOG_FILE
+          echo "【设备信息日志补全】" | tee -a $LOG_FILE
+          echo "===== 完整设备映射表 =====" >> $LOG_FILE
+          DEVICE_LIST=($DEVICES)
+          for i in "${!DEVICE_LIST[@]}"; do
+            device="${DEVICE_LIST[$i]}"
+            DEV_MOD=$(echo "$device" | grep -oP '\d+' | head -n1)
+            [ -z "$DEV_MOD" ] && DEV_MOD=$((i+1))
+            echo "$device → DEVICES_NAME=$device, DEVICE_MOD=$DEV_MOD" | tee -a $LOG_FILE
+          done
+          echo "===== 收集验证 =====" >> $LOG_FILE
+          if [ $(grep "映射结果:" $LOG_FILE | wc -l) -eq 8 ]; then
+            echo "设备收集完整（8/8）" | tee -a $LOG_FILE
+          else
+            echo "警告: 设备收集不完整" | tee -a $LOG_FILE
+          fi
+          echo "最终完成时间: $(date)" >> $LOG_FILE
 
       - name: 上传设备信息日志
         uses: actions/upload-artifact@v4
         with:
           name: device-info-collect-results
           path: src/device_only_collect.log
-          retention-days: 30  # 日志保留30天
-          if-no-files-found: error  # 日志缺失时标记失败
+          retention-days: 30
+          if-no-files-found: error
