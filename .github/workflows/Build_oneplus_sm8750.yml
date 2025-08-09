@@ -52,18 +52,16 @@ jobs:
           
           echo "-------------------------" >> $LOG_FILE
           echo "" >> $LOG_FILE
-      - name: 收集 main.bin setup_device_info（文件搜索版）
+      - name: 收集 main.bin setup_device_info（应急版，跳过repo同步）
         run: |
           cd src
-          echo "【设备信息收集开始（深度修正版）】" | tee -a $LOG_FILE
+          echo "【设备信息收集（应急模式）】" | tee -a $LOG_FILE
           
-          # 关键调整：同步基础源码目录（确保main.bin有正确运行环境）
-          echo "准备基础源码目录..." | tee -a $LOG_FILE
-          mkdir -p base_kernel
-          cd base_kernel
-          repo init -u https://github.com/FateYin1/kernel_manifest.git -b oneplus/sm8750 -m oneplus_13.xml --depth=1 > /dev/null 2>&1
-          repo sync -c -j2 --no-tags --force-sync > /dev/null 2>&1
-          cd ..  # 返回src目录
+          # 跳过源码同步，直接创建基础目录结构
+          echo "创建最小化目录结构..." | tee -a $LOG_FILE
+          mkdir -p base_kernel/{common,arch/arm64/configs,lib/lz4,crypto,fs/f2fs}
+          touch base_kernel/arch/arm64/configs/gki_defconfig
+          touch base_kernel/lib/lz4/lz4_compress.c
           
           for device in $DEVICES; do
             echo "----- 处理机型: $device -----" | tee -a $LOG_FILE
@@ -71,46 +69,28 @@ jobs:
             ENV_TEMP=$(mktemp)
             FILE_CHANGE_TEMP=$(mktemp)
             
-            # 记录执行前的文件列表（用于对比变化）
-            find . -type f -print > $FILE_CHANGE_TEMP
+            # 记录执行前文件列表
+            find base_kernel -type f -print > $FILE_CHANGE_TEMP
             
-            # 在源码目录中执行main.bin（可能依赖目录结构）
+            # 直接在基础目录执行main.bin
             cp .github/workflows/Bin/main.bin ./base_kernel
             chmod +x ./base_kernel/main.bin
             echo "执行命令: ./base_kernel/main.bin setup_device_info $device" >> $LOG_FILE
             ./base_kernel/main.bin "setup_device_info" "$device" 2>&1 | tee -a $LOG_FILE
             
-            # 导出环境变量（再次尝试）
+            # 提取环境变量和文件变化
             printenv > $ENV_TEMP
+            find base_kernel -type f -print | grep -Fxvf $FILE_CHANGE_TEMP > $FILE_CHANGE_TEMP.new
             
-            # 核心新增：搜索文件变化（main.bin可能写入文件而非环境变量）
-            echo "搜索文件变化中的设备信息..." | tee -a $LOG_FILE
-            find . -type f -print | grep -Fxvf $FILE_CHANGE_TEMP > $FILE_CHANGE_TEMP.new  # 新文件列表
-            echo "新增/修改的文件:" >> $LOG_FILE
-            cat $FILE_CHANGE_TEMP.new >> $LOG_FILE
+            # 强制搜索所有可能的标识
+            DEVICES_NAME=$(grep -r "$device" base_kernel | awk -F'[=:]' '{print $2}' | head -n1 | xargs)
+            DEVICE_MOD=$(grep -r -E "mod|id|num" base_kernel | grep -v '#' | awk -F'[=:]' '{print $2}' | head -n1 | xargs)
             
-            # 检查所有新增/修改文件中是否包含设备信息
-            DEV_INFO_FILE=$(grep -E "device|mod|info" $FILE_CHANGE_TEMP.new | head -n1)
-            if [ -n "$DEV_INFO_FILE" ] && [ -f "$DEV_INFO_FILE" ]; then
-              echo "在文件 $DEV_INFO_FILE 中搜索设备信息:" >> $LOG_FILE
-              cat "$DEV_INFO_FILE" | tee -a $LOG_FILE
-              # 从文件中提取可能的设备标识
-              DEVICES_NAME=$(grep -oP "(?i)device_name.*?\K\w+" "$DEV_INFO_FILE" | head -n1)
-              DEVICE_MOD=$(grep -oP "(?i)device_mod.*?\K\w+" "$DEV_INFO_FILE" | head -n1)
-            fi
-            
-            # 补充：检查内核配置文件变化（可能直接修改defconfig）
-            if [ -z "$DEVICES_NAME" ]; then
-              echo "检查内核配置文件..." | tee -a $LOG_FILE
-              DEVICES_NAME=$(grep -r "$device" ./base_kernel --include=*.defconfig | awk -F'=' '{print $2}' | head -n1)
-              DEVICE_MOD=$(grep -r -E "MOD|ID" ./base_kernel --include=*.defconfig | grep -v '#' | awk -F'=' '{print $2}' | head -n1)
-            fi
-            
-            # 最终记录结果
+            # 最终记录
             echo "DEVICES_NAME: ${DEVICES_NAME:-未获取}" >> $LOG_FILE
             echo "DEVICE_MOD: ${DEVICE_MOD:-未获取}" >> $LOG_FILE
             
-            # 清理临时文件
+            # 清理
             rm $ENV_TEMP $FILE_CHANGE_TEMP $FILE_CHANGE_TEMP.new
             rm -f ./base_kernel/main.bin
             echo "-------------------------" >> $LOG_FILE
