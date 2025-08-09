@@ -1,93 +1,72 @@
-name: 完整收集setup_lz4信息
+name: 收集 kernel_config 配置信息
 on:
   workflow_dispatch:
 
 jobs:
-  collect_setup_lz4:
+  collect_kernel_config:
     runs-on: ubuntu-latest
     env:
       REPO_URL: "https://github.com/showdo/build_oneplus_sm8750.git"
-      LOG_FILE: "setup_lz4_collection.log"
+      LOG_FILE: "kernel_config_collect.log"
       MAIN_BIN_PATH: ".github/workflows/Bin/main.bin"
+      CONFIG_WORKDIR: "kernel_config_workdir"
 
     steps:
-      - name: 克隆仓库
+      - name: 克隆仓库与初始化日志
         run: |
           git clone $REPO_URL src
           cd src
           git pull
-
-      - name: 初始化日志
-        run: |
-          cd src
-          echo "===== setup_lz4信息收集日志 =====" > $LOG_FILE
+          echo "===== kernel_config 信息收集日志 =====" > $LOG_FILE
           echo "开始时间: $(date)" >> $LOG_FILE
+          echo "目标命令: ./main.bin kernel_config" >> $LOG_FILE
 
-      - name: 安装基础依赖
+      - name: 准备环境
         run: |
           cd src
-          echo "【安装依赖】" | tee -a $LOG_FILE
-          sudo apt-get update
-          sudo apt-get install -y strace
+          echo "【准备环境】" | tee -a $LOG_FILE
+          # 创建工作目录
+          mkdir -p $CONFIG_WORKDIR/{arch/arm64/configs,configs}
+          # 复制二进制文件
+          cp $MAIN_BIN_PATH $CONFIG_WORKDIR/main.bin
+          chmod +x $CONFIG_WORKDIR/main.bin
+          # 创建模拟配置文件（匹配可能的依赖）
+          touch $CONFIG_WORKDIR/arch/arm64/configs/defconfig
+          echo "工作目录结构准备完成" | tee -a $LOG_FILE
 
-      - name: 准备工作目录
+      - name: 执行 kernel_config 并记录
         run: |
-          cd src
-          echo "【准备工作目录】" | tee -a $LOG_FILE
-          mkdir -p lz4_workdir
-          cp $MAIN_BIN_PATH lz4_workdir/main.bin
-          chmod +x lz4_workdir/main.bin
-          # 创建可能需要的目录结构
-          mkdir -p lz4_workdir/lib/lz4
-          mkdir -p lz4_workdir/fs/f2fs
-          echo "工作目录结构:" | tee -a $LOG_FILE
-          ls -laR lz4_workdir | tee -a $LOG_FILE
-
-      - name: 执行setup_lz4命令
-        run: |
-          cd src
-          echo "【执行setup_lz4】" | tee -a $LOG_FILE
-          cd lz4_workdir
+          cd src/$CONFIG_WORKDIR
+          echo "【执行 kernel_config】" | tee -a ../../$LOG_FILE
           
           # 记录执行前文件状态
-          find . -type f > pre_files.txt
+          find . -type f > pre_config_files.txt
           
-          # 执行命令并跟踪
-          strace -o lz4_strace.log ./main.bin "setup_lz4" > lz4_output.txt 2>&1
+          # 执行命令并捕获输出
+          ./main.bin "kernel_config" > config_output.txt 2>&1
           echo "命令退出码: $?" | tee -a ../../$LOG_FILE
           
           # 记录执行后文件状态
-          find . -type f > post_files.txt
+          find . -type f > post_config_files.txt
           
           # 记录输出内容
           echo "【命令输出】" | tee -a ../../$LOG_FILE
-          cat lz4_output.txt | tee -a ../../$LOG_FILE
+          cat config_output.txt | tee -a ../../$LOG_FILE
           
-          # 记录文件变化
-          echo "【文件变化】" | tee -a ../../$LOG_FILE
-          diff pre_files.txt post_files.txt | tee -a ../../$LOG_FILE
+          # 记录配置文件变化
+          echo "【配置文件变化】" | tee -a ../../$LOG_FILE
+          diff pre_config_files.txt post_config_files.txt | tee -a ../../$LOG_FILE
           
-          # 记录关键系统调用
-          echo "【关键系统调用】" | tee -a ../../$LOG_FILE
-          grep -E "write|open|create" lz4_strace.log | tee -a ../../$LOG_FILE
-
-      - name: 收集结果文件
-        run: |
-          cd src
-          echo "【结果文件内容】" | tee -a $LOG_FILE
-          # 检查可能生成的配置文件
-          if [ -f "lz4_workdir/lib/lz4/lz4_compress.c" ]; then
-            echo "lz4_compress.c内容:" | tee -a $LOG_FILE
-            cat lz4_workdir/lib/lz4/lz4_compress.c | tee -a $LOG_FILE
-          fi
-          if [ -f "lz4_workdir/fs/f2fs/compress.c" ]; then
-            echo "compress.c内容:" | tee -a $LOG_FILE
-            cat lz4_workdir/fs/f2fs/compress.c | tee -a $LOG_FILE
-          fi
+          # 提取生成的配置文件内容
+          echo "【生成的配置文件内容】" | tee -a ../../$LOG_FILE
+          for file in $(find . -name "*.config" -o -name "defconfig"); do
+            echo "----- $file -----" | tee -a ../../$LOG_FILE
+            cat "$file" | tee -a ../../$LOG_FILE
+          done
 
       - name: 上传日志
         uses: actions/upload-artifact@v4
         with:
-          name: setup-lz4-collection-results
-          path: src/setup_lz4_collection.log
+          name: kernel-config-collection-results
+          path: src/kernel_config_collect.log
           retention-days: 30
