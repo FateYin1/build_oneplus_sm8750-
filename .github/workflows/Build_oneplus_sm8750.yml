@@ -48,7 +48,11 @@ on:
             - 'BBR'
          default: 'FQ_CODEL'
       
-       
+      KPM:
+        type: boolean
+        description: "是否启用内核模块(KPM)？"
+        required: true
+        default: true
 
 
 jobs:
@@ -138,8 +142,8 @@ jobs:
 
       - name: 📦 Configure Git (设置下载账户)
         run: |
-          git config --global user.name "Q1udaoyu"
-          git config --global user.email "sucisama2888@gmail.com"
+          git config --global user.name "FateYin1"
+          git config --global user.email "1244243922@qq.com"
 
       - name: 🛠 Configure APT caching (配置APT缓存)
         run: |
@@ -351,6 +355,13 @@ jobs:
           ESCAPED_SUFFIX=$(printf '%s\n' "$DEFAULT_SUFFIX" | sed 's:[\/&]:\\&:g')
           sudo sed -i "s/-4k/$ESCAPED_SUFFIX/g" ./common/arch/arm64/configs/gki_defconfig
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
+
+      - name: 🔧 Enable KPM Config (启用KPM配置)
+        if: ${{ github.event.inputs.KPM == 'true' }}
+        run: |
+          cd kernel_workspace/kernel_platform
+          echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
+          sed -i 's/check_defconfig//' ./common/build.config.gki
           
       - name: 🔧 Add sched_ext (写入风驰补丁)
         if: ${{inputs.enable_feature_z }}
@@ -374,16 +385,58 @@ jobs:
           cd kernel_workspace/kernel_platform/common
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  gki_defconfig
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  Image
-       
-      - name: 📦 Make AnyKernel3 (创建Anykernel3)
+      - name: 🔨Apply KPM patch(应用KPM补丁)
+        if: ${{ github.event.inputs.KPM == 'true' }}
         run: |
-          cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
-          chmod +x main.bin
-          ./main.bin "make_anykernel3"
-          rm -rf ./main.bin
+           cd kernel_workspace/kernel_platform/common/out/arch/arm64/boot
+           curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.0/patch_linux
+           chmod +x patch_linux
+           ./patch_linux
+           rm -f Image
+           mv oImage Image
+           
+      - name: 📦 Make AnyKernel3 (创建AnyKernel3刷包)
+        run: |
+          git clone https://github.com/FateYin1/AnyKernel3 --depth=1
+          rm -rf ./AnyKernel3/.git
           
-      - name: 📤 Upload AnyKernel3 (上传 Anykernel3)
+          image_path=""
+          if [ -f "kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image" ]; then
+            image_path="kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image"
+          elif [ -f "kernel_workspace/kernel_platform/out/arch/arm64/boot/Image" ]; then
+            image_path="kernel_workspace/kernel_platform/out/arch/arm64/boot/Image"
+          else
+            image_path=$(find "kernel_workspace/kernel_platform" -name "Image" | grep -E "boot/Image$" | head -n1)
+          fi
+          
+          if [ -z "$image_path" ] || [ ! -f "$image_path" ]; then
+            echo "::error ::未找到Image文件，构建失败"
+            exit 1
+          fi
+          
+          echo "✅ Image文件路径: $image_path"
+          cp "$image_path" ./AnyKernel3/Image
+
+      - name: 📥 Download SukiSU Ultra APK (下载管理器)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          run_id=$(gh api \
+            "repos/SukiSU-Ultra/SukiSU-Ultra/actions/workflows/build-manager.yml/runs?branch=main&status=success&per_page=1" \
+            --jq '.workflow_runs[0].id' || echo "")
+          if [[ -n "$run_id" ]]; then
+            artifact_url=$(gh api \
+              "repos/SukiSU-Ultra/SukiSU-Ultra/actions/runs/$run_id/artifacts" | \
+              jq -r '.artifacts[] | select(.name == "manager") | .archive_download_url' | head -n1)
+            if [[ -n "$artifact_url" ]]; then
+              curl -fL -H "Authorization: token $GITHUB_TOKEN" -o manager.zip "$artifact_url"
+              unzip -j manager.zip "*.apk" -d ./AnyKernel3/
+            fi
+          fi
+
+      - name: 📤 Upload AnyKernel3 (上传刷包)
         uses: actions/upload-artifact@v4
         with:
-         name: AK3_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_SuKiSU
-         path: ./AnyKernel3/*
+          name: AK3_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_SuKiSU${{ github.event.inputs.KPM == 'true' && '_KPM' || '' }}${{ github.event.inputs.enable_feature_z == 'true' && '_SCHED' || '' }}
+          path: ./AnyKernel3/*
