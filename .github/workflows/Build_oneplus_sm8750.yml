@@ -372,11 +372,11 @@ jobs:
          rm -rf ./sched_ext/.git
          cd common/kernel/sched  
           
-      - name: 全局替换版本标识
+      - name: 全局替换版本标识（带文件提示）
         run: |
-         # 替换内核源码中的标识
-         find kernel_workspace -type f -exec sed -i 's/TG@qdykernel/酷安Fate007/g' {} +
-  
+         # 替换内核相关目录（需根据实际源码路径调整）
+         find kernel_workspace -type f -exec sh -c 'echo "🔍 正在替换内核文件：$1"; sed -i "s/TG@qdykernel/酷安Fate007/g" "$1"' _ {} \;
+    
       - name: 🔨 Build Kernel (构建内核)
         run: |
           export PATH="/usr/lib/ccache:$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"          
