@@ -1,4 +1,4 @@
-name: Build_oneplus_sm8750 (深度调试版)
+name: Build_oneplus_sm8750 (main.bin内部调试版)
 on:
   workflow_dispatch:
     inputs:
@@ -17,181 +17,124 @@ on:
           - 'realme_GT7pro_Speed'
         default: 'oneplus_13'
 
+      # 其他输入参数保持不变...
       keep_original_settings:
-        description: "📝保持原内核名称及构建时间(不懂请保持默认)"
+        description: "📝保持原内核名称及构建时间"
         required: false
         default: true
         type: boolean
-
-      custom_kernel_suffix:
-        description: "✏️ 自定义内核名称- 仅在取消勾选'保持原设置'时有效(不懂请保持默认)"
-        required: false
-        default: ''
-      
-      custom_kernel_time:
-        description: "⏰ 自定义构建时间- 仅在取消勾选'保持原设置'时有效(不懂请保持默认)"
-        required: false
-        default: ''
-
-      enable_feature_z:
-        description: "添加风驰驱动"
-        required: false
-        default: true
-        type: boolean
-
-      enable_feature_b:
-         description: "选择网络调度"
-         required: false
-         type: choice
-         options:
-            - 'FQ_CODEL'
-            - 'BBR'
-         default: 'FQ_CODEL'
-      
-      KPM:
-        type: boolean
-        description: "是否启用内核模块(KPM)？"
-        required: true
-        default: true
-
+      # ...省略其他参数
 
 jobs:
   build_with_command_monitor:
-    name: Build_${{ github.event.inputs.REPO_MANIFEST }}_With_Command_Monitor
     runs-on: ubuntu-latest
     steps:
-      # 省略前面相同步骤（保留原有逻辑）
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      # 省略前面相同步骤（依赖安装、repo同步等）
 
-      - name: 🕵️ 初始化命令监控目录
-        run: |
-          MONITOR_DIR="${GITHUB_WORKSPACE}/命令监控日志_${{ github.event.inputs.REPO_MANIFEST }}"
-          BACKUP_DIR="${MONITOR_DIR}/文件备份_执行前后"
-          mkdir -p "$MONITOR_DIR/setup_bin/执行命令日志"
-          mkdir -p "$MONITOR_DIR/main_bin/setup_lz4/执行命令日志"
-          mkdir -p "$MONITOR_DIR/main_bin/setup_gki_config/执行命令日志"
-          mkdir -p "$BACKUP_DIR/setup_bin_执行前" "$BACKUP_DIR/setup_bin_执行后"
-          mkdir -p "$BACKUP_DIR/main_bin_lz4_执行前" "$BACKUP_DIR/main_bin_lz4_执行后"
-          mkdir -p "$BACKUP_DIR/main_bin_gki_执行前" "$BACKUP_DIR/main_bin_gki_执行后"
-          echo "MONITOR_DIR=$MONITOR_DIR" >> $GITHUB_ENV
-          echo "BACKUP_DIR=$BACKUP_DIR" >> $GITHUB_ENV
-          echo "✅ 命令监控目录初始化完成：$MONITOR_DIR"
-
-      # 省略依赖安装、repo同步等相同步骤...
-
-      - name: 🔧 Set gki_defconfig（深度调试版）
+      - name: 🔧 Set gki_defconfig（main.bin内部调试）
         env:
           ENABLE_B: ${{ github.event.inputs.enable_feature_b }}       
         run: |
           cd kernel_workspace/kernel_platform
           
-          # 1. 验证核心文件完整性（新增）
+          # 1. 验证核心文件内容完整性
           GKI_CONFIG_PATH="./common/arch/arm64/configs/gki_defconfig"
-          echo "🔍 验证gki_defconfig完整性..."
-          if [ ! -s "$GKI_CONFIG_PATH" ]; then  # 检查文件非空
-            echo "::error ::gki_defconfig文件为空或不存在（路径：$GKI_CONFIG_PATH）"
+          echo "🔍 验证gki_defconfig内容..."
+          # 检查是否为有效配置文件（包含CONFIG_前缀）
+          if ! grep -q "^CONFIG_" "$GKI_CONFIG_PATH"; then
+            echo "::error ::gki_defconfig内容无效，未找到CONFIG_条目"
             exit 1
           fi
-          echo "✅ gki_defconfig文件大小：$(du -h "$GKI_CONFIG_PATH")"
-          echo "📄 gki_defconfig前10行内容："
-          head -n 10 "$GKI_CONFIG_PATH"  # 确认文件格式正确
+          # 备份完整文件内容用于对比
+          cat "$GKI_CONFIG_PATH" > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行前_gki_defconfig完整内容.log"
           
-          # 2. 备份前文件
-          echo "📥 备份main.bin setup_gki_config执行前的关键文件..."
-          cp "$GKI_CONFIG_PATH" "${{ env.BACKUP_DIR }}/main_bin_gki_执行前/gki_defconfig"
-          cp -r ./common/arch/arm64/configs "${{ env.BACKUP_DIR }}/main_bin_gki_执行前/configs_dir" || true
-          
-          # 3. 深度检查main.bin（新增）
-          echo "🔍 深度检查main.bin属性..."
+          # 2. 深度解析main.bin类型及内容（关键新增）
+          echo "🔍 解析main.bin类型及内容..."
           cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
-          file main.bin > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin文件类型.log"  # 查看是脚本还是二进制
-          echo "main.bin文件类型：$(file main.bin | cut -d',' -f1)"
-          echo "main.bin权限：$(ls -l main.bin)"
-          echo "main.bin哈希值：$(sha256sum main.bin)"  # 确认文件未损坏
-          
-          # 若为二进制，检查动态依赖（新增）
-          if file main.bin | grep -q "ELF"; then
-            echo "🔍 检查main.bin动态链接库依赖..."
-            ldd main.bin > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin动态依赖.log" 2>&1
-            if [ $? -ne 0 ]; then
-              echo "⚠️ main.bin可能是静态链接或非ELF文件，跳过动态依赖检查"
+          # 检查是否为脚本文件（可直接查看源码）
+          if head -n 1 main.bin | grep -q -E "^#!\/bin\/(bash|sh|python)"; then
+            echo "✅ main.bin是脚本文件，保存内容用于分析..."
+            cat main.bin > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/main.bin_脚本源码.log"
+            # 检查脚本语法错误
+            if head -n 1 main.bin | grep -q "bash"; then
+              echo "🔍 检查bash脚本语法..."
+              bash -n main.bin 2> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/main.bin_语法检查.log"
+              if [ $? -ne 0 ]; then
+                echo "::error ::main.bin脚本存在语法错误"
+                cat "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/main.bin_语法检查.log"
+                exit 1
+              fi
+            fi
+          else
+            # 二进制文件处理
+            echo "✅ main.bin是二进制文件，分析执行特征..."
+            # 检查是否为静态链接（动态链接可能缺库）
+            if ldd main.bin 2>&1 | grep -q "not a dynamic executable"; then
+              echo "📌 main.bin是静态链接二进制"
             else
-              echo "✅ 动态依赖检查完成，日志已保存"
+              echo "📌 main.bin动态依赖："
+              ldd main.bin | tee "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/main.bin_动态依赖.log"
             fi
           fi
           
-          # 4. 记录执行目录完整结构（新增）
-          echo "📂 执行目录完整结构（递归）：" > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/完整目录结构.log"
-          tree -L 5 >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/完整目录结构.log"  # 安装tree工具查看深层目录
-          
-          # 5. 验证参数传递（新增）
-          echo "🔍 验证输入参数ENABEL_B："
-          echo "原始输入：${{ github.event.inputs.enable_feature_b }}"
-          echo "环境变量：$ENABLE_B"
-          if [ "$ENABLE_B" != "FQ_CODEL" ] && [ "$ENABLE_B" != "BBR" ]; then
-            echo "::error ::无效的ENABLE_B值：$ENABLE_B"
-            exit 1
-          fi
-          
-          # 6. 执行前环境检查（新增）
-          echo "🔍 检查关键工具是否存在..."
-          for tool in sed grep awk patch; do
-            if ! command -v $tool &> /dev/null; then
-              echo "::error ::缺少必要工具：$tool"
+          # 3. 执行环境全景检查（新增）
+          echo "🔍 执行环境全景检查..."
+          # 检查当前用户权限
+          echo "当前用户：$(whoami)，UID: $(id -u)，GID: $(id -g)" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/环境检查.log"
+          # 检查工作目录权限
+          ls -ld . >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/环境检查.log"
+          # 检查关键目录可写性
+          for dir in ./ ./common ./common/arch/arm64/configs; do
+            touch "$dir/_test_write_permission" 2>> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/环境检查.log"
+            if [ $? -ne 0 ]; then
+              echo "::error ::目录不可写：$dir"
               exit 1
             fi
+            rm -f "$dir/_test_write_permission"
           done
           
-          # 7. 执行main.bin并捕获详细输出
-          echo "▶️ 开始执行main.bin setup_gki_config（带详细调试）..."
-          export DEBUG=1  # 可能触发main.bin内部调试输出（若支持）
+          # 4. 执行main.bin并捕获极致细节
+          echo "▶️ 执行main.bin（带指令级跟踪）..."
+          # 导出所有环境变量供main.bin使用
+          export > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行时环境变量全量.log"
           
-          # 执行命令并捕获所有输出（包括标准错误）
+          # 使用strace捕获所有系统调用，包括信号和进程状态
           sudo -E strace -f -tt -v -s 8192 \
             -e trace=all \
-            -o "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin系统调用全跟踪.log" \
+            -o "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/strace全量跟踪.log" \
             ./main.bin "setup_gki_config" "$ENABLE_B" \
-            1> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin标准输出.log" \
-            2> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin错误输出.log"
+            1> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/stdout.log" \
+            2> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/stderr.log"
           
-          # 8. 捕获退出码并分析
+          # 5. 捕获退出码并强制分析
           MAIN_GKI_EXIT_CODE=$?
-          echo "命令退出码: $MAIN_GKI_EXIT_CODE" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
+          echo "退出码：$MAIN_GKI_EXIT_CODE" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行信息.txt"
           
-          # 9. 执行后文件检查
-          echo "📥 备份执行后文件..."
-          [ -f "$GKI_CONFIG_PATH" ] && cp "$GKI_CONFIG_PATH" "${{ env.BACKUP_DIR }}/main_bin_gki_执行后/gki_defconfig" || echo "⚠️ 执行后gki_defconfig不存在"
+          # 6. 执行后文件状态检查
+          echo "📥 备份执行后状态..."
+          [ -f "$GKI_CONFIG_PATH" ] && cat "$GKI_CONFIG_PATH" > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行后_gki_defconfig完整内容.log"
           
-          # 10. 失败时强制输出关键日志（新增）
+          # 7. 失败时强制暴露关键线索
           if [ $MAIN_GKI_EXIT_CODE -ne 0 ]; then
-            echo "::error ::main.bin setup_gki_config执行失败，退出码=$MAIN_GKI_EXIT_CODE"
+            echo "::error ::main.bin执行失败，退出码=$MAIN_GKI_EXIT_CODE"
             echo "========================================"
-            echo "🚨 错误输出（最后20行）："
-            tail -n 20 "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin错误输出.log"
+            echo "🚨 错误输出（完整）："
+            cat "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/stderr.log"
             echo "========================================"
-            echo "🔍 最后访问的文件："
-            grep -E "openat|access" "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin系统调用全跟踪.log" | tail -n 20
+            echo "🔍 最后10个系统调用："
+            grep -E "exit_group|write|openat|execve" "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/strace全量跟踪.log" | tail -n 10
             echo "========================================"
             exit $MAIN_GKI_EXIT_CODE
           fi
           
           rm -rf ./main.bin
-          echo "✅ main.bin setup_gki_config执行成功"
-          
-          # 后续步骤保持不变
-          sudo sed -i 's/check_defconfig//' ./common/build.config.gki
-          cd common
-          git add -A && git commit -a -m "BUILD Kernel"
+          echo "✅ main.bin执行成功"
 
-      # 省略后续构建步骤...
+      # 省略后续步骤...
 
       - name: 📤 上传命令监控日志
         uses: actions/upload-artifact@v4
         with:
-          name: 命令监控日志_${{ env.DEVICES_NAME }}_${{ github.run_id }}
-          path: |
-            ${{ env.MONITOR_DIR }}/**/*
-            ${{ env.BACKUP_DIR }}/**/*
+          name: 命令监控日志_${{ env.DEVICES_NAME }}
+          path: ${{ env.MONITOR_DIR }}
           retention-days: 14
