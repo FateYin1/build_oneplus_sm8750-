@@ -156,17 +156,22 @@ jobs:
           git config --global user.name "FateYin1"
           git config --global user.email "1244243922@qq.com"
 
-      # 6. 配置APT缓存
+      # 替换原有的“Configure APT caching”步骤
       - name: 🛠 Configure APT caching (配置APT缓存)
         run: |
           APT_CACHE_DIR="$HOME/apt-cache"
           mkdir -p "$APT_CACHE_DIR"/{archives,lists/partial}
+          # 关键修复：同时授予当前用户和_apt用户权限（_apt是apt的运行用户）
+          sudo chown -R $USER:$USER "$APT_CACHE_DIR"
+          sudo chmod -R 775 "$APT_CACHE_DIR"  # 允许组用户（包括_apt）访问
+          sudo setfacl -R -m u:_apt:rwx "$APT_CACHE_DIR"  # 单独授予_apt用户读写权限
+
+          # 写入APT配置
           echo "Dir::Cache \"$APT_CACHE_DIR\";" | sudo tee /etc/apt/apt.conf.d/90user-cache
           echo "Dir::Cache::archives \"$APT_CACHE_DIR/archives\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
           echo "Dir::State::lists \"$APT_CACHE_DIR/lists\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
           echo "Acquire::Check-Valid-Until \"false\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
           echo "Acquire::Languages \"none\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
-          sudo chown -R $USER:$USER "$APT_CACHE_DIR"
 
       # 7. 缓存APT包
       - name: 🛠 Cache APT packages (缓存APT包)
@@ -177,20 +182,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-apt-
 
-      # 8. 安装编译依赖
+    # 替换原有的“Install dependencies”步骤
       - name: 📦 Install dependencies (安装依赖)
         run: |
           sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock
           APT_CACHE_DIR="$HOME/apt-cache"
           mkdir -p "$APT_CACHE_DIR/lists/partial"
-          sudo apt -o Dir::Cache="$APT_CACHE_DIR" update -qq
+          # 禁用apt的交互模式，避免警告
+          sudo DEBIAN_FRONTEND=noninteractive apt -o Dir::Cache="$APT_CACHE_DIR" update -qqy
+    
+          # 关键修复：用coreutils替代md5sum（md5sum属于coreutils）
           sudo DEBIAN_FRONTEND=noninteractive apt -o Dir::Cache="$APT_CACHE_DIR" install -yq --no-install-recommends \
             python3 p7zip-full git curl ccache libelf-dev \
             build-essential libelf-dev flex bison libssl-dev \
             libncurses-dev liblz4-tool zlib1g-dev \
-            libxml2-utils rsync unzip md5sum
-          
+            libxml2-utils rsync unzip coreutils  # 此处替换为coreutils
+    
           echo "✅ 依赖安装完成"
+
 
       # 9. 恢复CCACHE缓存
       - name: 📥 Restore ccache (载入 机型：${{ env.DEVICES_NAME }}的 ccache 缓存)
