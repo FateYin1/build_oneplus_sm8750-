@@ -88,6 +88,9 @@ jobs:
           # 修复Python语法警告
           sudo sed -i 's/import datetime/import datetime\nfrom datetime import UTC/' /usr/local/bin/repo
           sudo sed -i 's/datetime.datetime.utcnow()/datetime.datetime.now(UTC)/g' /usr/local/bin/repo
+          # 验证repo
+          echo "repo路径：$(which repo)"
+          echo "repo版本：$(repo --version | head -n1)"
 
       # 7. 同步内核源码
       - name: 📥 Sync kernel source
@@ -233,8 +236,8 @@ jobs:
             fi
           fi
 
-      # 12. 生成LZ4/ZSTD补丁（添加完整调试和容错）
-      - name: 🔨 Generate LZ4/ZSTD patches (with full debug)
+      # 12. 生成LZ4/ZSTD补丁（完整处理逻辑，含新增文件）
+      - name: 🔨 Generate LZ4/ZSTD patches (full logic)
         run: |
           # 定义核心路径
           COMMON_DIR="kernel_workspace/kernel_platform/common"
@@ -252,65 +255,128 @@ jobs:
           echo "BACKUP LZ4路径: $BACKUP_DIR/lib/lz4"
           echo "PATCH_DIR: $PATCH_DIR"
 
-          # 目录存在性检查
-          echo -e "\n=== 关键目录存在性验证 ==="
-          if [ ! -d "$LZ4_DIR" ]; then
-            echo "::error ::错误1: 修改后的LZ4目录不存在 - $LZ4_DIR"
-            exit 1
+          # 1. 识别新增文件（源目录有，备份目录无）
+          echo -e "\n=== 识别新增文件 ==="
+          # 生成源目录文件列表（相对路径）
+          find "$LZ4_DIR" -type f | sed "s|^$LZ4_DIR/||" > "$PATCH_DIR/source_files.txt"
+          # 生成备份目录文件列表（相对路径）
+          find "$BACKUP_DIR/lib/lz4" -type f | sed "s|^$BACKUP_DIR/lib/lz4/||" > "$PATCH_DIR/backup_files.txt"
+          # 找出源有而备份没有的文件（新增文件）
+          NEW_FILES=$(comm -23 "$PATCH_DIR/source_files.txt" "$PATCH_DIR/backup_files.txt")
+          
+          if [ -n "$NEW_FILES" ]; then
+            echo "检测到新增文件，共 $(echo "$NEW_FILES" | wc -l) 个:"
+            echo "$NEW_FILES"
+            # 为新增文件创建空的备份文件（确保diff能识别为新增）
+            for file in $NEW_FILES; do
+              empty_file="$BACKUP_DIR/lib/lz4/$file"
+              mkdir -p "$(dirname "$empty_file")"
+              touch "$empty_file"  # 创建空文件作为对比基准
+              echo "  已创建空备份文件: $empty_file"
+            done
           else
-            echo "✅ 验证通过: 修改后的LZ4目录存在"
+            echo "未检测到新增文件"
           fi
 
-          if [ ! -d "$BACKUP_DIR/lib/lz4" ]; then
-            echo "::error ::错误2: 备份的LZ4目录不存在 - $BACKUP_DIR/lib/lz4"
-            exit 1
+          # 2. 处理符号链接（将链接转换为实际文件）
+          echo -e "\n=== 处理符号链接 ==="
+          for link in $(find "$LZ4_DIR" -type l); do
+            echo "发现符号链接: $link，替换为实际文件"
+            target=$(readlink "$link")
+            rm "$link"
+            cp "$target" "$link"
+          done
+          for link in $(find "$BACKUP_DIR/lib/lz4" -type l); do
+            echo "发现备份符号链接: $link，替换为实际文件"
+            target=$(readlink "$link")
+            rm "$link"
+            cp "$target" "$link"
+          done
+
+          # 3. 识别并排除二进制文件（diff无法处理二进制文件）
+          echo -e "\n=== 识别二进制文件 ==="
+          # 创建二进制文件列表（排除已知文本类型）
+          BINARY_FILES=$(find "$LZ4_DIR" -type f ! -name "*.c" ! -name "*.h" ! -name "*.s" ! -name "Makefile" ! -name "Kconfig")
+          if [ -n "$BINARY_FILES" ]; then
+            echo "检测到非文本文件，将排除以下文件:"
+            echo "$BINARY_FILES"
+            # 生成排除参数（--exclude=文件名）
+            EXCLUDE_PARAMS=$(echo "$BINARY_FILES" | xargs -n1 basename | sed 's/^/--exclude=/')
           else
-            echo "✅ 验证通过: 备份的LZ4目录存在"
+            echo "未检测到非文本文件，无需排除"
+            EXCLUDE_PARAMS=""
           fi
 
-          # 显示目录内容对比
-          echo -e "\n=== 目录内容对比 ==="
-          echo "修改后的LZ4文件列表:"
-          ls -la "$LZ4_DIR"
-          echo -e "\n备份的LZ4文件列表:"
-          ls -la "$BACKUP_DIR/lib/lz4"
+          # 4. 分文件对比，定位具体失败文件
+          echo -e "\n=== 分文件对比检测 ==="
+          FAIL_FILES=""
+          # 遍历所有源文件
+          for file in $(find "$LZ4_DIR" -type f); do
+            rel_path="${file#$LZ4_DIR/}"
+            backup_file="$BACKUP_DIR/lib/lz4/$rel_path"
+            if [ -f "$backup_file" ]; then
+              echo "对比文件: $rel_path"
+              if ! diff -u "$backup_file" "$file" > /dev/null 2>&1; then
+                echo "  存在差异"
+              fi
+            else
+              echo "  备份文件缺失: $rel_path"
+              FAIL_FILES="$FAIL_FILES $rel_path"
+            fi
+          done
+          if [ -n "$FAIL_FILES" ]; then
+            echo "⚠️ 存在缺失的备份文件，可能导致diff失败: $FAIL_FILES"
+          fi
 
-          # 生成LZ4补丁（带错误捕获）
-          echo -e "\n=== 开始生成LZ4补丁 ==="
-          # 使用diff命令并捕获错误
-          if diff -urN "$BACKUP_DIR/lib/lz4" "$LZ4_DIR" > "$PATCH_DIR/lz4_patch_with_asm.patch"; then
+          # 5. 生成LZ4补丁（带排除参数和错误处理）
+          echo -e "\n=== 生成LZ4补丁 ==="
+          # 使用-N参数确保新增文件被识别，--binary处理可能的二进制差异
+          if diff -urN $EXCLUDE_PARAMS --binary "$BACKUP_DIR/lib/lz4" "$LZ4_DIR" > "$PATCH_DIR/lz4_patch_with_asm.patch"; then
             echo "✅ diff命令执行成功"
-            # 检查补丁是否为空
-            if [ -s "$PATCH_DIR/lz4_patch_with_asm.patch" ]; then
-              echo "✅ LZ4补丁生成成功（非空文件）"
-              echo "补丁大小: $(du -sh "$PATCH_DIR/lz4_patch_with_asm.patch" | awk '{print $1}')"
-              echo "补丁前10行预览:"
-              head -n 10 "$PATCH_DIR/lz4_patch_with_asm.patch"
-            else
-              rm "$PATCH_DIR/lz4_patch_with_asm.patch"
-              echo "⚠️ 生成的LZ4补丁为空，已删除（可能无实际改动）"
-            fi
           else
-            echo "❌ diff命令执行失败，错误代码: $?"
-            # 检查是否生成了部分补丁文件
-            if [ -f "$PATCH_DIR/lz4_patch_with_asm.patch" ]; then
-              echo "错误时生成的补丁内容:"
-              cat "$PATCH_DIR/lz4_patch_with_asm.patch"
+            # 处理diff返回值（1=有差异，>1=错误）
+            if [ $? -eq 1 ]; then
+              echo "⚠️ diff返回1（存在差异但已生成补丁）"
             else
-              echo "未生成任何补丁文件"
-            fi
-            # 尝试使用--ignore-all-space参数重试（处理空格导致的差异）
-            echo "尝试忽略空格差异重新生成补丁..."
-            if diff -urN -w "$BACKUP_DIR/lib/lz4" "$LZ4_DIR" > "$PATCH_DIR/lz4_patch_with_asm_ignore_space.patch"; then
-              echo "✅ 忽略空格后补丁生成成功"
-              echo "忽略空格的补丁大小: $(du -sh "$PATCH_DIR/lz4_patch_with_asm_ignore_space.patch" | awk '{print $1}')"
-            else
-              echo "❌ 忽略空格后仍生成失败"
+              echo "❌ diff命令真正失败（错误代码: $?）"
+              # 尝试分目录生成补丁（缩小范围）
+              echo "尝试分目录生成补丁..."
+              for subdir in $(find "$LZ4_DIR" -type d); do
+                rel_subdir="${subdir#$LZ4_DIR/}"
+                backup_subdir="$BACKUP_DIR/lib/lz4/$rel_subdir"
+                if [ -d "$backup_subdir" ]; then
+                  diff -urN $EXCLUDE_PARAMS --binary "$backup_subdir" "$subdir" > "$PATCH_DIR/lz4_patch_$rel_subdir.patch"
+                  if [ -s "$PATCH_DIR/lz4_patch_$rel_subdir.patch" ]; then
+                    echo "✅ 成功生成子目录补丁: lz4_patch_$rel_subdir.patch"
+                  fi
+                fi
+              done
               exit 1
             fi
           fi
 
-          # 生成ZSTD补丁
+          # 6. 验证补丁内容（重点检查新增文件）
+          if [ -s "$PATCH_DIR/lz4_patch_with_asm.patch" ]; then
+            echo "✅ LZ4补丁生成成功，大小: $(du -sh "$PATCH_DIR/lz4_patch_with_asm.patch" | awk '{print $1}')"
+            # 检查补丁中是否包含新增文件的记录
+            if [ -n "$NEW_FILES" ]; then
+              echo "验证新增文件是否在补丁中:"
+              for file in $NEW_FILES; do
+                if grep -q "+++ $LZ4_DIR/$file" "$PATCH_DIR/lz4_patch_with_asm.patch"; then
+                  echo "  ✅ 新增文件已包含: $file"
+                else
+                  echo "  ⚠️ 新增文件未包含: $file"
+                fi
+              done
+            fi
+            echo "补丁前10行预览:"
+            head -n 10 "$PATCH_DIR/lz4_patch_with_asm.patch"
+          else
+            rm "$PATCH_DIR/lz4_patch_with_asm.patch"
+            echo "⚠️ LZ4补丁为空（无改动）"
+          fi
+
+          # 7. 生成ZSTD补丁（相同逻辑处理）
           echo -e "\n=== 开始生成ZSTD补丁 ==="
           ZSTD_DIR=$(find "$COMMON_DIR" -type d -name "zstd" | grep -E "(lib|compression)/zstd" | head -1 || true)
           if [ -n "$ZSTD_DIR" ] && [ -d "$ZSTD_DIR" ] && [ -d "$BACKUP_DIR/$(basename "$ZSTD_DIR")" ]; then
@@ -318,7 +384,22 @@ jobs:
             echo "ZSTD源目录: $ZSTD_DIR"
             echo "ZSTD备份目录: $BACKUP_DIR/$ZSTD_REL_PATH"
             
-            diff -urN "$BACKUP_DIR/$ZSTD_REL_PATH" "$ZSTD_DIR" > "$PATCH_DIR/zstd_patch_with_asm.patch"
+            # 识别ZSTD新增文件
+            find "$ZSTD_DIR" -type f | sed "s|^$ZSTD_DIR/||" > "$PATCH_DIR/zstd_source_files.txt"
+            find "$BACKUP_DIR/$ZSTD_REL_PATH" -type f | sed "s|^$BACKUP_DIR/$ZSTD_REL_PATH/||" > "$PATCH_DIR/zstd_backup_files.txt"
+            ZSTD_NEW_FILES=$(comm -23 "$PATCH_DIR/zstd_source_files.txt" "$PATCH_DIR/zstd_backup_files.txt")
+            
+            if [ -n "$ZSTD_NEW_FILES" ]; then
+              echo "ZSTD检测到新增文件: $(echo "$ZSTD_NEW_FILES" | wc -l) 个"
+              for file in $ZSTD_NEW_FILES; do
+                empty_file="$BACKUP_DIR/$ZSTD_REL_PATH/$file"
+                mkdir -p "$(dirname "$empty_file")"
+                touch "$empty_file"
+              done
+            fi
+            
+            # 生成ZSTD补丁
+            diff -urN --binary "$BACKUP_DIR/$ZSTD_REL_PATH" "$ZSTD_DIR" > "$PATCH_DIR/zstd_patch_with_asm.patch"
             if [ -s "$PATCH_DIR/zstd_patch_with_asm.patch" ]; then
               echo "✅ ZSTD补丁生成成功"
             else
