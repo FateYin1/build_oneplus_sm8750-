@@ -385,18 +385,7 @@ jobs:
          rm -rf ./sched_ext/.git
          cd common/kernel/sched  
           
-      - name: 📦 Archive kernel source and upload to Release (打包源码并上传到Release)
-        env:
-         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-         cd kernel_workspace
-         zip -r ../kernel_source_${{ github.run_id }}.zip .
-         cd ..
 
-         # 创建Release（若已存在则跳过）
-         RELEASE_TAG="source-${{ github.run_id }}"
-         gh release create "$RELEASE_TAG" "kernel_source_${{ github.run_id }}.zip" --title "Source for $RELEASE_TAG" --notes "Auto-uploaded kernel source after all patching and before build." --repo $GITHUB_REPOSITORY || \
-         gh release upload "$RELEASE_TAG" "kernel_source_${{ github.run_id }}.zip" --repo $GITHUB_REPOSITORY
       - name: 🔨 Build Kernel (构建内核)
         run: |
           export PATH="/usr/lib/ccache:$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"          
