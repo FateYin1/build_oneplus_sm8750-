@@ -479,18 +479,6 @@ jobs:
          rm -rf ./sched_ext/.git
          cd common/kernel/sched  
 
-      - name: 📦 Archive kernel source
-        env:
-         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-         cd kernel_workspace
-         zip -r ../kernel_source_${{ github.run_id }}.zip .
-         cd ..
-
-         RELEASE_TAG="source-${{ github.run_id }}"
-         gh release create "$RELEASE_TAG" "kernel_source_${{ github.run_id }}.zip" --title "Source for $RELEASE_TAG" --notes "Auto-uploaded kernel source" --repo $GITHUB_REPOSITORY || \
-         gh release upload "$RELEASE_TAG" "kernel_source_${{ github.run_id }}.zip" --repo $GITHUB_REPOSITORY
-
       - name: 🔨 Build Kernel
         run: |
           export PATH="/usr/lib/ccache:$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"          
