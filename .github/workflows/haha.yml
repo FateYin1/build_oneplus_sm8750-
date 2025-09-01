@@ -256,7 +256,7 @@ jobs:
             KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null || echo 13000) + 10700)
             echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
             
-            # 逆向setup.bin：执行前备份（增加目录检查）
+            # 逆向setup.bin：执行前备份
             echo "🕵️ 逆向setup.bin：执行前备份"
             if [ ! -d "." ]; then
               echo "::error ::当前目录不存在，无法备份"
@@ -266,7 +266,7 @@ jobs:
             echo "执行前备份目录结构："
             ls -la "${{ env.REVERSE_DIR }}/setup_bin/执行前"
             
-            # 执行setup.bin并监控（增加执行成功检查）
+            # 执行setup.bin并监控
             cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/setup.bin" ./
             chmod +x setup.bin
             if [ ! -f "setup.bin" ]; then
@@ -279,35 +279,42 @@ jobs:
               exit 1
             fi
             echo "🕵️ 执行setup.bin并监控命令"
-            # 执行setup.bin并捕获退出码
             sudo strace -f -tt -T -e trace=execve,openat,write,unlink,chmod \
               -o "${{ env.REVERSE_DIR }}/setup_bin/命令日志/setup.bin_strace.log" \
               ./setup.bin 2>&1 | tee "${{ env.REVERSE_DIR }}/setup_bin/命令日志/setup.bin_执行输出.log"
-            SETUP_EXIT_CODE=${PIPESTATUS[0]}  # 获取setup.bin的实际退出码
+            SETUP_EXIT_CODE=${PIPESTATUS[0]}
             if [ $SETUP_EXIT_CODE -ne 0 ]; then
               echo "::error ::setup.bin执行失败，退出码=$SETUP_EXIT_CODE"
               exit $SETUP_EXIT_CODE
             fi
             
-            # 逆向setup.bin：执行后备份+生成差异（增加兼容性处理）
+            # 逆向setup.bin：执行后备份+生成差异（核心修复：正确处理diff退出码）
             echo "🕵️ 逆向setup.bin：执行后备份+生成差异"
             cp -r . "${{ env.REVERSE_DIR }}/setup_bin/执行后"
             echo "执行后备份目录结构："
             ls -la "${{ env.REVERSE_DIR }}/setup_bin/执行后"
             
-            # 修复diff命令：增加-a处理二进制文件，输出错误到日志
             DIFF_LOG="${{ env.REVERSE_DIR }}/setup_bin/文件差异/diff_error.log"
-            echo "生成文件差异（若失败将记录到$DIFF_LOG）"
-            diff -urNa "${{ env.REVERSE_DIR }}/setup_bin/执行前" "${{ env.REVERSE_DIR }}/setup_bin/执行后" \
-              > "${{ env.REVERSE_DIR }}/setup_bin/文件差异/setup_bin_文件变化.diff" 2> "$DIFF_LOG"
+            DIFF_OUTPUT="${{ env.REVERSE_DIR }}/setup_bin/文件差异/setup_bin_文件变化.diff"
+            echo "生成文件差异（结果保存到$DIFF_OUTPUT，错误日志到$DIFF_LOG）"
             
-            # 检查diff是否成功（即使失败也不中断，仅警告）
-            if [ $? -ne 0 ]; then
-              echo "⚠️ 文件差异生成可能不完整，错误信息："
+            # 执行diff并捕获退出码（关键修复）
+            diff -urN --no-dereference -a \
+              "${{ env.REVERSE_DIR }}/setup_bin/执行前" \
+              "${{ env.REVERSE_DIR }}/setup_bin/执行后" \
+              > "$DIFF_OUTPUT" 2> "$DIFF_LOG"
+            DIFF_EXIT_CODE=$?
+            
+            # 正确处理diff退出码：
+            # 0 = 无差异；1 = 有差异（正常）；2 = 错误（异常）
+            if [ $DIFF_EXIT_CODE -eq 2 ]; then
+              echo "⚠️ 文件差异生成错误，详细日志："
               cat "$DIFF_LOG"
-              # 不退出，继续执行后续步骤
+              # 仅记录警告，不中断流程
+            elif [ $DIFF_EXIT_CODE -eq 1 ]; then
+              echo "✅ 文件差异生成成功（发现差异）"
             else
-              echo "✅ 文件差异生成成功"
+              echo "ℹ️ 未发现文件差异"
             fi
 
       - name: 🛠 替换SukiSU版本标识
@@ -372,8 +379,19 @@ jobs:
                 # 逆向main.bin(setup_lz4)：执行后备份+生成差异
                 echo "🕵️ 逆向main.bin(setup_lz4)：执行后备份+生成差异"
                 cp -r . "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/执行后"
-                diff -urNa "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/执行前" "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/执行后" \
-                  > "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/文件差异/main_bin_setup_lz4_文件变化.diff" 2> "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/文件差异/diff_error.log"
+                DIFF_LOG="${{ env.REVERSE_DIR }}/main_bin_setup_lz4/文件差异/diff_error.log"
+                DIFF_OUTPUT="${{ env.REVERSE_DIR }}/main_bin_setup_lz4/文件差异/main_bin_setup_lz4_文件变化.diff"
+                diff -urN --no-dereference -a \
+                  "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/执行前" \
+                  "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/执行后" \
+                  > "$DIFF_OUTPUT" 2> "$DIFF_LOG"
+                DIFF_EXIT_CODE=$?
+                if [ $DIFF_EXIT_CODE -eq 2 ]; then
+                  echo "⚠️ main_bin_setup_lz4差异生成错误："
+                  cat "$DIFF_LOG"
+                elif [ $DIFF_EXIT_CODE -eq 1 ]; then
+                  echo "✅ main_bin_setup_lz4差异生成成功"
+                fi
             fi
             
             if [ "${REPO_MANIFEST}" = "realme_GT7pro_Speed" ] && [ "${REPO_MANIFEST}" = "realme_GT7pro" ]; then
@@ -433,8 +451,19 @@ jobs:
           # 逆向main.bin(setup_gki_config)：执行后备份+生成差异
           echo "🕵️ 逆向main.bin(setup_gki_config)：执行后备份+生成差异"
           cp -r . "${{ env.REVERSE_DIR }}/main_bin_setup_gki/执行后"
-          diff -urNa "${{ env.REVERSE_DIR }}/main_bin_setup_gki/执行前" "${{ env.REVERSE_DIR }}/main_bin_setup_gki/执行后" \
-            > "${{ env.REVERSE_DIR }}/main_bin_setup_gki/文件差异/main_bin_setup_gki_文件变化.diff" 2> "${{ env.REVERSE_DIR }}/main_bin_setup_gki/文件差异/diff_error.log"
+          DIFF_LOG="${{ env.REVERSE_DIR }}/main_bin_setup_gki/文件差异/diff_error.log"
+          DIFF_OUTPUT="${{ env.REVERSE_DIR }}/main_bin_setup_gki/文件差异/main_bin_setup_gki_文件变化.diff"
+          diff -urN --no-dereference -a \
+            "${{ env.REVERSE_DIR }}/main_bin_setup_gki/执行前" \
+            "${{ env.REVERSE_DIR }}/main_bin_setup_gki/执行后" \
+            > "$DIFF_OUTPUT" 2> "$DIFF_LOG"
+          DIFF_EXIT_CODE=$?
+          if [ $DIFF_EXIT_CODE -eq 2 ]; then
+            echo "⚠️ main_bin_setup_gki差异生成错误："
+            cat "$DIFF_LOG"
+          elif [ $DIFF_EXIT_CODE -eq 1 ]; then
+            echo "✅ main_bin_setup_gki差异生成成功"
+          fi
           
           # Remove check_defconfig
           sudo sed -i 's/check_defconfig//' ./common/build.config.gki
@@ -481,7 +510,86 @@ jobs:
          rm -rf ./sched_ext/.git
          cd common/kernel/sched  
 
+      - name: 📦 Archive kernel source and upload to Release (打包源码并上传到Release)
+        env:
+         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+         cd kernel_workspace
+         zip -r ../kernel_source_${{ github.run_id }}.zip .
+         cd ..
 
+         RELEASE_TAG="source-${{ github.run_id }}"
+         gh release create "$RELEASE_TAG" "kernel_source_${{ github.run_id }}.zip" --title "Source for $RELEASE_TAG" --notes "Auto-uploaded kernel source after all patching and before build." --repo $GITHUB_REPOSITORY || \
+         gh release upload "$RELEASE_TAG" "kernel_source_${{ github.run_id }}.zip" --repo $GITHUB_REPOSITORY
+
+      - name: 🔨 Build Kernel (构建内核)
+        run: |
+          export PATH="/usr/lib/ccache:$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"          
+          export CCACHE_COMPILERCHECK="%compiler% -dumpmachine; %compiler% -dumpversion"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+          export CCACHE_MAXSIZE="8G"
+          export KBUILD_BUILD_TIMESTAMP="${KERNEL_TIME}"
+          cd kernel_workspace/kernel_platform/common
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  gki_defconfig
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  Image
+
+      - name: 🔨Apply KPM patch(应用KPM补丁)
+        if: ${{ github.event.inputs.KPM == 'true' }}
+        run: |
+           cd kernel_workspace/kernel_platform/common/out/arch/arm64/boot
+           curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.0/patch_linux
+           chmod +x patch_linux
+           ./patch_linux
+           rm -f Image
+           mv oImage Image
+           
+      - name: 📦 Make AnyKernel3 (创建AnyKernel3刷包)
+        run: |
+          git clone https://github.com/FateYin1/AnyKernel3 --depth=1
+          rm -rf ./AnyKernel3/.git
+          
+          image_path=""
+          if [ -f "kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image" ]; then
+            image_path="kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image"
+          elif [ -f "kernel_workspace/kernel_platform/out/arch/arm64/boot/Image" ]; then
+            image_path="kernel_workspace/kernel_platform/out/arch/arm64/boot/Image"
+          else
+            image_path=$(find "kernel_workspace/kernel_platform" -name "Image" | grep -E "boot/Image$" | head -n1)
+          fi
+          
+          if [ -z "$image_path" ] || [ ! -f "$image_path" ]; then
+            echo "::error ::未找到Image文件，构建失败"
+            exit 1
+          fi
+          
+          echo "✅ Image文件路径: $image_path"
+          cp "$image_path" ./AnyKernel3/Image
+
+      - name: 📥 Download SukiSU Ultra APK (下载管理器)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          run_id=$(gh api \
+            "repos/SukiSU-Ultra/SukiSU-Ultra/actions/workflows/build-manager.yml/runs?branch=main&status=success&per_page=1" \
+            --jq '.workflow_runs[0].id' || echo "")
+          if [[ -n "$run_id" ]]; then
+            artifact_url=$(gh api \
+              "repos/SukiSU-Ultra/SukiSU-Ultra/actions/runs/$run_id/artifacts" | \
+              jq -r '.artifacts[] | select(.name == "manager") | .archive_download_url' | head -n1)
+            if [[ -n "$artifact_url" ]]; then
+              curl -fL -H "Authorization: token $GITHUB_TOKEN" -o manager.zip "$artifact_url"
+              unzip -j manager.zip "*.apk" -d ./AnyKernel3/
+            fi
+          fi
+
+      - name: 📤 Upload AnyKernel3 (上传刷包)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AK3_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_SuKiSU${{ github.event.inputs.KPM == 'true' && '_KPM' || '' }}${{ github.event.inputs.enable_feature_z == 'true' && '_SCHED' || '' }}
+          path: ./AnyKernel3/*
 
       - name: 📤 上传加密文件逆向结果
         uses: actions/upload-artifact@v4
