@@ -68,6 +68,7 @@ jobs:
       - name: 🕵️ 初始化黑盒监控目录（仅3个黑盒场景）
         run: |
           BB_MONITOR_DIR="${GITHUB_WORKSPACE}/黑盒监控日志_${{ github.event.inputs.REPO_MANIFEST }}"
+          # 统一使用下划线命名，避免与文件混淆
           mkdir -p "$BB_MONITOR_DIR/setup_bin"  # 监控setup.bin
           mkdir -p "$BB_MONITOR_DIR/main_bin_setup_lz4"  # 监控main.bin setup_lz4
           mkdir -p "$BB_MONITOR_DIR/main_bin_setup_gki"  # 监控main.bin setup_gki_config
@@ -237,18 +238,27 @@ jobs:
           cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/setup.bin" ../
           cd ..
           chmod +x setup.bin
+          
+          # 修复点1：统一使用setup_bin目录（下划线），与初始化保持一致
+          # 增加目录存在性检查，确保日志目录已创建
+          if [ ! -d "${{ env.BB_MONITOR_DIR }}/setup_bin" ]; then
+            mkdir -p "${{ env.BB_MONITOR_DIR }}/setup_bin"
+            echo "⚠️ 自动创建缺失的监控目录：${{ env.BB_MONITOR_DIR }}/setup_bin"
+          fi
+          
           file setup.bin > "${{ env.BB_MONITOR_DIR }}/setup_bin/setup.bin文件类型.log"
           if head -n1 setup.bin | grep -E "^#!/bin/(bash|sh|python)"; then
-            cat setup.bin > "${{ env.BB_MONITOR_DIR }}/setup.bin/setup.bin脚本源码.log"  # 脚本直接存源码
+            cat setup.bin > "${{ env.BB_MONITOR_DIR }}/setup_bin/setup.bin脚本源码.log"  # 脚本直接存源码
           else
-            ldd setup.bin 2> "${{ env.BB_MONITOR_DIR }}/setup.bin/setup.bin动态依赖.log"  # 二进制存依赖
+            # 修复点2：日志路径从setup.bin改为setup_bin（下划线）
+            ldd setup.bin 2> "${{ env.BB_MONITOR_DIR }}/setup_bin/setup.bin动态依赖.log"  # 二进制存依赖
           fi
 
           # 3. 黑盒执行：strace抓全量操作（文件读写/命令执行）
           sudo -E -u runner strace -f -tt -v -s 8192 \
             -e trace=execve,openat,read,write,chmod,unlink,rename,stat \
             -o "${{ env.BB_MONITOR_DIR }}/setup_bin/setup.bin系统调用.log" \
-            ./setup.bin 2>&1 | tee "${{ env.BB_MONITOR_DIR }}/setup.bin/setup.bin控制台输出.log"
+            ./setup.bin 2>&1 | tee "${{ env.BB_MONITOR_DIR }}/setup_bin/setup.bin控制台输出.log"
 
           # 4. 黑盒结果：记录退出码+关键文件备份（防黑盒修改KernelSU）
           SETUP_EXIT_CODE=${PIPESTATUS[0]}
