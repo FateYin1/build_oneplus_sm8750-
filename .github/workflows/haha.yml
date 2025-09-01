@@ -67,12 +67,10 @@ jobs:
       - name: 🕵️ 初始化命令监控目录（按执行场景拆分）
         run: |
           MONITOR_DIR="${GITHUB_WORKSPACE}/命令监控日志_${{ github.event.inputs.REPO_MANIFEST }}"
-          # 🔍 新增监控逻辑：创建文件备份目录（执行前后对比，不影响原有逻辑）
           BACKUP_DIR="${MONITOR_DIR}/文件备份_执行前后"
           mkdir -p "$MONITOR_DIR/setup_bin/执行命令日志"
           mkdir -p "$MONITOR_DIR/main_bin/setup_lz4/执行命令日志"
           mkdir -p "$MONITOR_DIR/main_bin/setup_gki_config/执行命令日志"
-          # 🔍 新增监控逻辑：创建各步骤备份子目录
           mkdir -p "$BACKUP_DIR/setup_bin_执行前" "$BACKUP_DIR/setup_bin_执行后"
           mkdir -p "$BACKUP_DIR/main_bin_lz4_执行前" "$BACKUP_DIR/main_bin_lz4_执行后"
           mkdir -p "$BACKUP_DIR/main_bin_gki_执行前" "$BACKUP_DIR/main_bin_gki_执行后"
@@ -190,9 +188,7 @@ jobs:
             python3 p7zip-full git curl ccache libelf-dev \
             build-essential libelf-dev flex bison libssl-dev \
             libncurses-dev liblz4-tool zlib1g-dev \
-            libxml2-utils rsync unzip strace \
-            diffutils  # 🔍 新增监控逻辑：仅添加diff工具（用于文件差异对比，不删除原有依赖）
-          
+            libxml2-utils rsync unzip strace diffutils
           echo "✅ 依赖安装完成"
           
       - name: 📥 Restore ccache
@@ -250,13 +246,11 @@ jobs:
             KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null || echo 13000) + 10700)
             echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
             
-            # 🔍 新增监控逻辑：setup.bin执行前备份关键文件（不影响原有执行）
             echo "📥 备份setup.bin执行前的关键文件..."
             cp -r ./setup.sh "${{ env.BACKUP_DIR }}/setup_bin_执行前/setup.sh" || true
             cp -r ./KernelSU "${{ env.BACKUP_DIR }}/setup_bin_执行前/KernelSU" || true
             [ -f "../common/arch/arm64/configs/gki_defconfig" ] && cp ../common/arch/arm64/configs/gki_defconfig "${{ env.BACKUP_DIR }}/setup_bin_执行前/gki_defconfig"
             
-            # 监控setup.bin执行（强化环境变量）
             echo "🕵️ 监控setup.bin执行的命令..."
             cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/setup.bin" ./
             chmod +x setup.bin
@@ -265,7 +259,6 @@ jobs:
               exit 1
             fi
             
-            # 核心修复1：模拟完整GitHub Actions环境变量集
             export GITHUB_ACTIONS="true"
             export CI="true"
             export RUNNER_USER="runner"
@@ -277,40 +270,30 @@ jobs:
             export GITHUB_SHA="${{ github.sha }}"
             export RUNNER_OS="Linux"
             export RUNNER_ARCH="X64"
-            # 🔍 新增监控逻辑：补充完整环境变量（不覆盖原有变量，仅新增）
             export PATH="${PATH}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
             export USER="root"
             export PWD="${PWD}"
             export TERM="xterm-256color"
             
-            # 记录环境变量用于调试
-            # 🔍 新增监控逻辑：记录完整环境变量（保留原有筛选逻辑）
             env > "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/环境变量_完整.log"
             env | grep -E "GITHUB_|CI|RUNNER_|HOME" > "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/环境变量.txt"
             
-            # 记录执行信息
             echo "执行时间: $(date -u)" > "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/执行信息.txt"
             echo "执行命令: ./setup.bin" >> "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/执行信息.txt"
-            # 🔍 新增监控逻辑：补充执行细节（不修改原有记录）
             echo "执行用户: $(whoami)" >> "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/执行信息.txt"
             echo "执行目录: $(pwd)" >> "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/执行信息.txt"
             
-            # 核心修复2：使用sudo -E保留环境变量执行
-            # 🔍 新增监控逻辑：扩展strace跟踪事件（不修改原有执行命令）
             sudo -E strace -f -tt -T -v -s 4096 \
               -e trace=execve,openat,write,getuid,getgid,chmod,unlink,stat,access,mkdir,rmdir \
               -o "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/setup.bin系统调用跟踪.log" \
               ./setup.bin 2>&1 | tee "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/setup.bin控制台输出.log"
             
-            # 🔍 新增监控逻辑：setup.bin执行后备份关键文件（不影响原有判断）
             echo "📥 备份setup.bin执行后的关键文件..."
             cp -r ./setup.sh "${{ env.BACKUP_DIR }}/setup_bin_执行后/setup.sh" || true
             cp -r ./KernelSU "${{ env.BACKUP_DIR }}/setup_bin_执行后/KernelSU" || true
             [ -f "../common/arch/arm64/configs/gki_defconfig" ] && cp ../common/arch/arm64/configs/gki_defconfig "${{ env.BACKUP_DIR }}/setup_bin_执行后/gki_defconfig"
             
-            # 检查执行结果
             SETUP_EXIT_CODE=${PIPESTATUS[0]}
-            # 🔍 新增监控逻辑：记录退出码（不修改原有判断）
             echo "命令退出码: $SETUP_EXIT_CODE" >> "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/执行信息.txt"
             if [ $SETUP_EXIT_CODE -ne 0 ]; then
               echo "::error ::setup.bin执行失败，退出码=$SETUP_EXIT_CODE"
@@ -360,18 +343,15 @@ jobs:
                     [ -e "$file" ] && rm "$file"
                 done
             
-                # 🔍 新增监控逻辑：main.bin setup_lz4执行前备份（不影响原有逻辑）
                 echo "📥 备份main.bin setup_lz4执行前的关键文件..."
                 cp -r ./lib/lz4 "${{ env.BACKUP_DIR }}/main_bin_lz4_执行前/lib_lz4" || true
                 [ -f "./arch/arm64/configs/gki_defconfig" ] && cp ./arch/arm64/configs/gki_defconfig "${{ env.BACKUP_DIR }}/main_bin_lz4_执行前/gki_defconfig"
                 
-                # 监控main.bin setup_lz4执行（强化环境模拟）
                 echo "🕵️ 监控main.bin setup_lz4执行的命令..."
                 cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
                 chmod +x main.bin
                 [ ! -f "main.bin" ] && { echo "::error ::main.bin文件不存在"; exit 1; }
                 
-                # 核心修复：完整环境变量模拟
                 export GITHUB_ACTIONS="true"
                 export CI="true"
                 export RUNNER_USER="runner"
@@ -383,37 +363,28 @@ jobs:
                 export GITHUB_SHA="${{ github.sha }}"
                 export RUNNER_OS="Linux"
                 export RUNNER_ARCH="X64"
-                # 🔍 新增监控逻辑：补充完整环境变量（不覆盖原有）
                 export PATH="${PATH}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
                 export USER="root"
                 export PWD="${PWD}"
                 export TERM="xterm-256color"
                 
-                # 记录环境变量
-                # 🔍 新增监控逻辑：记录完整环境变量（保留原有筛选）
                 env > "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/环境变量_完整.log"
                 env | grep -E "GITHUB_|CI|RUNNER_|HOME" > "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/环境变量.txt"
                 
-                # 记录执行信息
                 echo "执行时间: $(date -u)" > "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/执行信息.txt"
                 echo "执行命令: ./main.bin setup_lz4" >> "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/执行信息.txt"
-                # 🔍 新增监控逻辑：补充执行细节
                 echo "执行用户: $(whoami)" >> "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/执行信息.txt"
                 echo "执行目录: $(pwd)" >> "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/执行信息.txt"
                 
-                # 使用sudo -E保留环境变量，并跟踪用户ID检查
-                # 🔍 新增监控逻辑：扩展strace跟踪事件
                 sudo -E strace -f -tt -T -v -s 4096 \
                   -e trace=execve,openat,write,getuid,getgid,stat,chmod,unlink,access,mkdir,rmdir \
                   -o "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/main.bin_setup_lz4系统调用跟踪.log" \
                   ./main.bin "setup_lz4" 2>&1 | tee "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/main.bin_setup_lz4控制台输出.log"
                 
-                # 🔍 新增监控逻辑：执行后备份+记录退出码
                 echo "📥 备份main.bin setup_lz4执行后的关键文件..."
                 cp -r ./lib/lz4 "${{ env.BACKUP_DIR }}/main_bin_lz4_执行后/lib_lz4" || true
                 [ -f "./arch/arm64/configs/gki_defconfig" ] && cp ./arch/arm64/configs/gki_defconfig "${{ env.BACKUP_DIR }}/main_bin_lz4_执行后/gki_defconfig"
                 
-                # 检查执行结果
                 MAIN_LZ4_EXIT_CODE=${PIPESTATUS[0]}
                 echo "命令退出码: $MAIN_LZ4_EXIT_CODE" >> "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/执行信息.txt"
                 if [ $MAIN_LZ4_EXIT_CODE -ne 0 ]; then
@@ -454,24 +425,51 @@ jobs:
           grep -q "hmbird_patch.o" Makefile || echo "obj-y += hmbird_patch.o" >> Makefile
           echo "HMBird补丁应用完成"
 
-      - name: 🔧 Set gki_defconfig
+      - name: 🔧 Set gki_defconfig（增强错误排查）
         env:
           ENABLE_B: ${{ github.event.inputs.enable_feature_b }}       
         run: |
           cd kernel_workspace/kernel_platform
           
-          # 🔍 新增监控逻辑：main.bin setup_gki_config执行前备份
+          # 1. 备份前先检查关键文件是否存在（新增排查）
+          echo "🔍 检查main.bin setup_gki_config执行前的关键文件..."
+          GKI_CONFIG_PATH="./common/arch/arm64/configs/gki_defconfig"
+          if [ ! -f "$GKI_CONFIG_PATH" ]; then
+            echo "::error ::gki_defconfig文件不存在（路径：$GKI_CONFIG_PATH）"
+            exit 1
+          else
+            echo "✅ 确认gki_defconfig存在：$GKI_CONFIG_PATH"
+          fi
+          
+          # 2. 执行前备份
           echo "📥 备份main.bin setup_gki_config执行前的关键文件..."
-          [ -f "./common/arch/arm64/configs/gki_defconfig" ] && cp ./common/arch/arm64/configs/gki_defconfig "${{ env.BACKUP_DIR }}/main_bin_gki_执行前/gki_defconfig"
+          cp "$GKI_CONFIG_PATH" "${{ env.BACKUP_DIR }}/main_bin_gki_执行前/gki_defconfig"
           cp -r ./common/arch/arm64/configs "${{ env.BACKUP_DIR }}/main_bin_gki_执行前/configs_dir" || true
           
-          # 监控main.bin setup_gki_config执行（强化环境模拟）
-          echo "🕵️ 监控main.bin setup_gki_config执行的命令..."
+          # 3. 检查main.bin是否存在且可执行（新增排查）
+          echo "🔍 检查main.bin文件状态..."
           cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
+          if [ ! -f "main.bin" ]; then
+            echo "::error ::main.bin文件未找到（复制失败）"
+            exit 1
+          fi
           chmod +x main.bin
-          [ ! -f "main.bin" ] && { echo "::error ::main.bin文件不存在"; exit 1; }
+          if [ ! -x "main.bin" ]; then
+            echo "::error ::main.bin无执行权限"
+            exit 1
+          fi
+          echo "✅ main.bin状态正常（存在且可执行）"
           
-          # 核心修复：完整环境变量模拟
+          # 4. 打印当前目录结构（新增排查）
+          echo "📂 当前目录结构（执行前）：" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/目录结构.log"
+          ls -la >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/目录结构.log"
+          echo "📂 common/arch/arm64/configs目录内容：" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/目录结构.log"
+          ls -la ./common/arch/arm64/configs >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/目录结构.log"
+          
+          # 5. 监控执行
+          echo "🕵️ 监控main.bin setup_gki_config执行的命令..."
+          
+          # 环境变量设置
           export GITHUB_ACTIONS="true"
           export CI="true"
           export RUNNER_USER="runner"
@@ -483,50 +481,56 @@ jobs:
           export GITHUB_SHA="${{ github.sha }}"
           export RUNNER_OS="Linux"
           export RUNNER_ARCH="X64"
-          # 🔍 新增监控逻辑：补充完整环境变量
           export PATH="${PATH}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
           export USER="root"
           export PWD="${PWD}"
           export TERM="xterm-256color"
-          export ENABLE_B="${ENABLE_B}"  # 显式传递参数（不修改原有逻辑）
+          export ENABLE_B="${ENABLE_B}"
           
-          # 记录环境变量
-          # 🔍 新增监控逻辑：记录完整环境变量（保留原有筛选）
+          # 记录环境变量（新增关键变量检查）
           env > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/环境变量_完整.log"
-          env | grep -E "GITHUB_|CI|RUNNER_|HOME" > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/环境变量.txt"
+          env | grep -E "GITHUB_|CI|RUNNER_|HOME|ENABLE_B" > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/环境变量_关键.log"
+          echo "🔍 关键变量检查：ENABLE_B=$ENABLE_B，PWD=$PWD，USER=$USER"
           
           # 记录执行信息
           echo "执行时间: $(date -u)" > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
           echo "执行命令: ./main.bin setup_gki_config $ENABLE_B" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
           echo "网络调度参数: $ENABLE_B" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
-          # 🔍 新增监控逻辑：补充执行细节
           echo "执行用户: $(whoami)" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
           echo "执行目录: $(pwd)" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
           
-          # 使用sudo -E保留环境变量，并跟踪更多系统调用
-          # 🔍 新增监控逻辑：扩展strace跟踪事件
-          sudo -E strace -f -tt -T -v -s 4096 \
-            -e trace=execve,openat,write,getuid,getgid,stat,access,chmod,unlink,mkdir,rmdir \
+          # 执行命令（简化strace参数排除跟踪问题）
+          echo "▶️ 开始执行main.bin setup_gki_config..."
+          sudo -E strace -f -tt -v -s 4096 \
+            -e trace=execve,openat,write,read \
             -o "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin_setup_gki_config系统调用跟踪.log" \
             ./main.bin "setup_gki_config" "$ENABLE_B" 2>&1 | tee "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin_setup_gki_config控制台输出.log"
           
-          # 🔍 新增监控逻辑：执行后备份+生成差异日志
-          echo "📥 备份main.bin setup_gki_config执行后的关键文件..."
-          [ -f "./common/arch/arm64/configs/gki_defconfig" ] && cp ./common/arch/arm64/configs/gki_defconfig "${{ env.BACKUP_DIR }}/main_bin_gki_执行后/gki_defconfig"
+          # 6. 捕获退出码并详细记录（新增）
+          MAIN_GKI_EXIT_CODE=${PIPESTATUS[0]}
+          echo "命令退出码: $MAIN_GKI_EXIT_CODE" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
+          
+          # 7. 执行后备份（即使失败也备份）
+          echo "📥 备份main.bin setup_gki_config执行后的关键文件（无论成功与否）..."
+          [ -f "$GKI_CONFIG_PATH" ] && cp "$GKI_CONFIG_PATH" "${{ env.BACKUP_DIR }}/main_bin_gki_执行后/gki_defconfig" || echo "⚠️ 执行后gki_defconfig不存在"
           cp -r ./common/arch/arm64/configs "${{ env.BACKUP_DIR }}/main_bin_gki_执行后/configs_dir" || true
           
-          # 生成gki_defconfig差异（不影响原有流程）
+          # 8. 生成差异（若文件存在）
           if [ -f "${{ env.BACKUP_DIR }}/main_bin_gki_执行前/gki_defconfig" ] && [ -f "${{ env.BACKUP_DIR }}/main_bin_gki_执行后/gki_defconfig" ]; then
             diff -u "${{ env.BACKUP_DIR }}/main_bin_gki_执行前/gki_defconfig" "${{ env.BACKUP_DIR }}/main_bin_gki_执行后/gki_defconfig" > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/gki_defconfig修改差异.log"
           fi
           
-          # 检查执行结果
-          MAIN_GKI_EXIT_CODE=${PIPESTATUS[0]}
-          echo "命令退出码: $MAIN_GKI_EXIT_CODE" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
+          # 9. 失败时输出详细错误信息（新增）
           if [ $MAIN_GKI_EXIT_CODE -ne 0 ]; then
             echo "::error ::main.bin setup_gki_config执行失败，退出码=$MAIN_GKI_EXIT_CODE"
+            echo "📋 失败诊断信息："
+            echo "1. 执行目录内容：$(ls -la)"
+            echo "2. main.bin文件大小：$(du -h main.bin)"
+            echo "3. 最后10行控制台输出："
+            tail -n 10 "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin_setup_gki_config控制台输出.log"
             exit $MAIN_GKI_EXIT_CODE
           fi
+          
           rm -rf ./main.bin
           echo "✅ main.bin setup_gki_config命令监控完成"
           
@@ -612,7 +616,7 @@ jobs:
             [ -n "$artifact_url" ] && {
               curl -fL -H "Authorization: token $GITHUB_TOKEN" -o manager.zip "$artifact_url"
               unzip -j manager.zip "*.apk" -d ./AnyKernel3/
-            
+          
           }
 
       - name: 📤 Upload AnyKernel3
@@ -625,7 +629,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: 命令监控日志_${{ env.DEVICES_NAME }}_${{ github.run_id }}
-          # 🔍 新增监控逻辑：包含文件备份目录（不修改原有日志路径）
           path: |
             ${{ env.MONITOR_DIR }}/**/*
             ${{ env.BACKUP_DIR }}/**/*
