@@ -64,15 +64,24 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 新增：初始化逆向结果目录（不影响原编译）
-      - name: 🕵️ 初始化加密文件逆向目录
+      # 修复：用兼容语法创建逆向目录（避免花括号展开问题）
+      - name: 🕵️ 初始化加密文件逆向目录（修复版）
         run: |
           REVERSE_DIR="${GITHUB_WORKSPACE}/加密文件逆向结果_${{ github.event.inputs.REPO_MANIFEST }}"
-          mkdir -p "$REVERSE_DIR"/{
-            setup_bin/{执行前,执行后,命令日志,文件差异},
-            main_bin_setup_lz4/{执行前,执行后,命令日志,文件差异},
-            main_bin_setup_gki/{执行前,执行后,命令日志,文件差异}
-          }
+          # 分步创建目录，兼容所有shell环境
+          mkdir -p "$REVERSE_DIR"
+          mkdir -p "$REVERSE_DIR/setup_bin/执行前"
+          mkdir -p "$REVERSE_DIR/setup_bin/执行后"
+          mkdir -p "$REVERSE_DIR/setup_bin/命令日志"
+          mkdir -p "$REVERSE_DIR/setup_bin/文件差异"
+          mkdir -p "$REVERSE_DIR/main_bin_setup_lz4/执行前"
+          mkdir -p "$REVERSE_DIR/main_bin_setup_lz4/执行后"
+          mkdir -p "$REVERSE_DIR/main_bin_setup_lz4/命令日志"
+          mkdir -p "$REVERSE_DIR/main_bin_setup_lz4/文件差异"
+          mkdir -p "$REVERSE_DIR/main_bin_setup_gki/执行前"
+          mkdir -p "$REVERSE_DIR/main_bin_setup_gki/执行后"
+          mkdir -p "$REVERSE_DIR/main_bin_setup_gki/命令日志"
+          mkdir -p "$REVERSE_DIR/main_bin_setup_gki/文件差异"
           echo "REVERSE_DIR=$REVERSE_DIR" >> $GITHUB_ENV
           echo "✅ 逆向目录初始化完成：$REVERSE_DIR"
 
@@ -190,7 +199,7 @@ jobs:
             python3 p7zip-full git curl ccache libelf-dev \
             build-essential libelf-dev flex bison libssl-dev \
             libncurses-dev liblz4-tool zlib1g-dev \
-            libxml2-utils rsync unzip strace  # 新增：安装strace用于命令监控
+            libxml2-utils rsync unzip strace
           
           echo "✅ 依赖安装完成（含逆向所需strace）"
           
@@ -249,11 +258,11 @@ jobs:
             KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null || echo 13000) + 10700)
             echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
             
-            # 新增：逆向setup.bin - 执行前备份环境
+            # 逆向setup.bin：执行前备份
             echo "🕵️ 逆向setup.bin：执行前备份"
             cp -r . "${{ env.REVERSE_DIR }}/setup_bin/执行前"
             
-            # 原逻辑：复制并执行setup.bin（新增strace监控）
+            # 执行setup.bin并监控
             cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/setup.bin" ./
             chmod +x setup.bin
             if [ ! -f "kernel/Makefile" ]; then
@@ -262,12 +271,11 @@ jobs:
               exit 1
             fi
             echo "🕵️ 执行setup.bin并监控命令"
-            # 用strace跟踪所有命令执行（execve）和文件操作，输出到日志
             sudo strace -f -tt -T -e trace=execve,openat,write,unlink,chmod \
               -o "${{ env.REVERSE_DIR }}/setup_bin/命令日志/setup.bin_strace.log" \
               ./setup.bin 2>&1 | tee "${{ env.REVERSE_DIR }}/setup_bin/命令日志/setup.bin_执行输出.log"
             
-            # 新增：逆向setup.bin - 执行后备份环境+生成差异
+            # 逆向setup.bin：执行后备份+生成差异
             echo "🕵️ 逆向setup.bin：执行后备份+生成差异"
             cp -r . "${{ env.REVERSE_DIR }}/setup_bin/执行后"
             diff -urN "${{ env.REVERSE_DIR }}/setup_bin/执行前" "${{ env.REVERSE_DIR }}/setup_bin/执行后" \
@@ -276,7 +284,6 @@ jobs:
       - name: 🛠 替换SukiSU版本标识
         run: |
          cd kernel_workspace/kernel_platform
-         # 查找并替换特征字符串
          TARGET_FILES=$(grep -rl "TG@qdykernel" . || true)
           if [ -n "$TARGET_FILES" ]; then
             echo "发现需要替换的文件："
@@ -320,11 +327,11 @@ jobs:
                     fi
                 done
             
-                # 新增：逆向main.bin(setup_lz4) - 执行前备份环境
+                # 逆向main.bin(setup_lz4)：执行前备份
                 echo "🕵️ 逆向main.bin(setup_lz4)：执行前备份"
                 cp -r . "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/执行前"
                 
-                # 原逻辑：复制并执行main.bin setup_lz4（新增strace监控）
+                # 执行main.bin setup_lz4并监控
                 cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
                 chmod +x main.bin
                 echo "🕵️ 执行main.bin setup_lz4并监控命令"
@@ -333,7 +340,7 @@ jobs:
                   ./main.bin "setup_lz4" 2>&1 | tee "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/命令日志/main.bin_setup_lz4_执行输出.log"
                 rm -rf ./main.bin
                 
-                # 新增：逆向main.bin(setup_lz4) - 执行后备份环境+生成差异
+                # 逆向main.bin(setup_lz4)：执行后备份+生成差异
                 echo "🕵️ 逆向main.bin(setup_lz4)：执行后备份+生成差异"
                 cp -r . "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/执行后"
                 diff -urN "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/执行前" "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/执行后" \
@@ -381,11 +388,11 @@ jobs:
         run: |
           cd kernel_workspace/kernel_platform
           
-          # 新增：逆向main.bin(setup_gki_config) - 执行前备份环境
+          # 逆向main.bin(setup_gki_config)：执行前备份
           echo "🕵️ 逆向main.bin(setup_gki_config)：执行前备份"
           cp -r . "${{ env.REVERSE_DIR }}/main_bin_setup_gki/执行前"
           
-          # 原逻辑：复制并执行main.bin setup_gki_config（新增strace监控）
+          # 执行main.bin setup_gki_config并监控
           cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
           chmod +x main.bin
           echo "🕵️ 执行main.bin setup_gki_config并监控命令"
@@ -394,13 +401,13 @@ jobs:
             ./main.bin "setup_gki_config" "$ENABLE_B" 2>&1 | tee "${{ env.REVERSE_DIR }}/main_bin_setup_gki/命令日志/main.bin_setup_gki_执行输出.log"
           rm -rf ./main.bin
           
-          # 新增：逆向main.bin(setup_gki_config) - 执行后备份环境+生成差异
+          # 逆向main.bin(setup_gki_config)：执行后备份+生成差异
           echo "🕵️ 逆向main.bin(setup_gki_config)：执行后备份+生成差异"
           cp -r . "${{ env.REVERSE_DIR }}/main_bin_setup_gki/执行后"
           diff -urN "${{ env.REVERSE_DIR }}/main_bin_setup_gki/执行前" "${{ env.REVERSE_DIR }}/main_bin_setup_gki/执行后" \
             > "${{ env.REVERSE_DIR }}/main_bin_setup_gki/文件差异/main_bin_setup_gki_文件变化.diff"
           
-          #Remove check_defconfig
+          # Remove check_defconfig
           sudo sed -i 's/check_defconfig//' ./common/build.config.gki
           cd common
           git add -A && git commit -a -m "BUILD Kernel"
@@ -453,7 +460,6 @@ jobs:
          zip -r ../kernel_source_${{ github.run_id }}.zip .
          cd ..
 
-         # 创建Release（若已存在则跳过）
          RELEASE_TAG="source-${{ github.run_id }}"
          gh release create "$RELEASE_TAG" "kernel_source_${{ github.run_id }}.zip" --title "Source for $RELEASE_TAG" --notes "Auto-uploaded kernel source after all patching and before build." --repo $GITHUB_REPOSITORY || \
          gh release upload "$RELEASE_TAG" "kernel_source_${{ github.run_id }}.zip" --repo $GITHUB_REPOSITORY
@@ -527,10 +533,9 @@ jobs:
           name: AK3_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_SuKiSU${{ github.event.inputs.KPM == 'true' && '_KPM' || '' }}${{ github.event.inputs.enable_feature_z == 'true' && '_SCHED' || '' }}
           path: ./AnyKernel3/*
 
-      # 新增：上传加密文件逆向结果（关键：下载后分析）
       - name: 📤 上传加密文件逆向结果
         uses: actions/upload-artifact@v4
         with:
           name: 加密文件逆向结果_${{ env.DEVICES_NAME }}_${{ github.run_id }}
           path: ${{ env.REVERSE_DIR }}/**/*
-          retention-days: 90  # 保留90天供分析
+          retention-days: 90
