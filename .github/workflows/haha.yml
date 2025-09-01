@@ -1,4 +1,4 @@
-name: Build_oneplus_sm8777
+name: Build_oneplus_sm8750
 on:
   workflow_dispatch:
     inputs:
@@ -64,18 +64,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 新增：初始化备份目录（仅存关键文件备份和差异日志）
-      - name: 📁 初始化黑盒追踪备份目录
+      # 新增：初始化备份目录（仅添加，不修改原有步骤）
+      - name: 📁 初始化备份目录
         run: |
-          TRACE_DIR="${GITHUB_WORKSPACE}/黑盒追踪_${{ github.event.inputs.REPO_MANIFEST }}"
-          # 备份目录：覆盖3个黑盒影响的关键文件
-          mkdir -p "$TRACE_DIR/lz4/源码同步后"       # lz4原始状态（黑盒修改前）
-          mkdir -p "$TRACE_DIR/lz4/main_bin后"        # lz4被main.bin修改后状态
-          mkdir -p "$TRACE_DIR/config/setup_gki前"    # 配置文件原始状态（黑盒修改前）
-          mkdir -p "$TRACE_DIR/config/setup_gki后"    # 配置文件被main.bin修改后状态
-          mkdir -p "$TRACE_DIR/差异日志"              # 自动生成的对比结果
-          echo "TRACE_DIR=$TRACE_DIR" >> $GITHUB_ENV
-          echo "✅ 黑盒追踪目录初始化完成：$TRACE_DIR"
+          BACKUP_DIR="${GITHUB_WORKSPACE}/备份_${{ github.event.inputs.REPO_MANIFEST }}"
+          mkdir -p "$BACKUP_DIR/lz4_源码同步后"
+          mkdir -p "$BACKUP_DIR/lz4_mainbin后"
+          mkdir -p "$BACKUP_DIR/config_setup前"
+          mkdir -p "$BACKUP_DIR/config_setup后"
+          mkdir -p "$BACKUP_DIR/差异日志"
+          echo "BACKUP_DIR=$BACKUP_DIR" >> $GITHUB_ENV
 
       - name: 📊 Check disk space (检查磁盘空间)
         run: |
@@ -190,8 +188,7 @@ jobs:
             python3 p7zip-full git curl ccache libelf-dev \
             build-essential libelf-dev flex bison libssl-dev \
             libncurses-dev liblz4-tool zlib1g-dev \
-            libxml2-utils rsync unzip \
-            diffutils  # 新增：仅用于生成差异日志的工具
+            libxml2-utils rsync unzip diffutils  # 仅新增diffutils用于对比
           
           echo "✅ 依赖安装完成"
           
@@ -232,7 +229,6 @@ jobs:
          chmod a+x ~/repo
          sudo mv ~/repo /usr/local/bin/repo
 
-      # 新增：节点1 - 源码同步后，备份lz4原始状态（未被黑盒修改）
       - name: 📥 Initialize repo and sync (初始化repo并同步内核源码)
         run: |
          mkdir kernel_workspace && cd kernel_workspace
@@ -241,13 +237,10 @@ jobs:
          rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
          
-         # 备份lz4原始目录（main.bin修改前）
-         LZ4_RAW_PATH="./kernel_platform/common/lib/lz4"
-         if [ -d "$LZ4_RAW_PATH" ]; then
-           cp -r "$LZ4_RAW_PATH" "${{ env.TRACE_DIR }}/lz4/源码同步后/"
-           echo "✅ 已备份lz4原始状态：${{ env.TRACE_DIR }}/lz4/源码同步后/"
-         else
-           echo "⚠️ lz4原始目录不存在，跳过备份"
+         # 新增：备份源码同步同步后的lz4目录（原始状态）
+         LZ4_PATH="./kernel_platform/common/lib/lz4"
+         if [ -d "$LZ4_PATH" ]; then
+           cp -r "$LZ4_PATH" "${{ env.BACKUP_DIR }}/lz4_源码同步后/"
          fi
          
       - name: ⚙️ Set SuKiSU Ultra (设置SuKiSU Ultra)
@@ -282,7 +275,6 @@ jobs:
             echo "⚠️ 未找到目标标识文件，继续执行"
           fi
 
-      # 新增：节点2 - main.bin setup_lz4执行前后，备份lz4并对比
       - name: 🔧 Set up SUSFS (配置 SUSFS)
         run: |
            cd kernel_workspace
@@ -316,31 +308,19 @@ jobs:
                     fi
                 done
             
-                # 执行main.bin setup_lz4（原逻辑保留）
                 cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
                 chmod +x main.bin
                 ./main.bin "setup_lz4"
                 rm -rf ./main.bin
 
-                # 新增：备份main.bin修改后的lz4目录
-                LZ4_AFTER_PATH="./lib/lz4"
-                if [ -d "$LZ4_AFTER_PATH" ]; then
-                  cp -r "$LZ4_AFTER_PATH" "${{ env.TRACE_DIR }}/lz4/main_bin后/"
-                  echo "✅ 已备份main.bin修改后的lz4：${{ env.TRACE_DIR }}/lz4/main_bin后/"
-                  
-                  # 新增：生成lz4差异日志（源码同步后 vs main.bin后）
-                  if [ -d "${{ env.TRACE_DIR }}/lz4/源码同步后/lz4" ]; then
-                    diff -urN "${{ env.TRACE_DIR }}/lz4/源码同步后/lz4" "${{ env.TRACE_DIR }}/lz4/main_bin后/lz4" > "${{ env.TRACE_DIR }}/差异日志/lz4_改动.diff" 2>/dev/null
-                    if [ -s "${{ env.TRACE_DIR }}/差异日志/lz4_改动.diff" ]; then
-                      echo "✅ lz4差异日志已生成：${{ env.TRACE_DIR }}/差异日志/lz4_改动.diff"
-                    else
-                      echo "lz4无改动" > "${{ env.TRACE_DIR }}/差异日志/lz4_改动.diff"
-                    fi
-                  else
-                    echo "lz4原始备份缺失，无法对比" > "${{ env.TRACE_DIR }}/差异日志/lz4_改动.diff"
+                # 新增：备份main.bin处理后的lz4目录并对比
+                LZ4_AFTER="./lib/lz4"
+                if [ -d "$LZ4_AFTER" ]; then
+                  cp -r "$LZ4_AFTER" "${{ env.BACKUP_DIR }}/lz4_mainbin后/"
+                  # 生成lz4差异日志
+                  if [ -d "${{ env.BACKUP_DIR }}/lz4_源码同步后/lz4" ]; then
+                    diff -urN "${{ env.BACKUP_DIR }}/lz4_源码同步后/lz4" "$LZ4_AFTER" > "${{ env.BACKUP_DIR }}/差异日志/lz4差异.diff" 2>/dev/null
                   fi
-                else
-                  echo "⚠️ main.bin修改后的lz4目录不存在"
                 fi
             fi
             
@@ -379,53 +359,36 @@ jobs:
           fi
           echo "HMBird补丁应用完成"
 
-      # 新增：节点3 - main.bin setup_gki_config执行前后，备份配置并对比
       - name: 🔧 Set gki_defconfig (设置编译配置)
         env:
           ENABLE_B: ${{ github.event.inputs.enable_feature_b }}       
         run: |
           cd kernel_workspace/kernel_platform
           
-          # 新增：备份setup_gki_config前的配置文件（黑盒修改前）
-          CONFIG_BEFORE_PATH="./common/arch/arm64/configs"
-          if [ -d "$CONFIG_BEFORE_PATH" ]; then
-            cp -r "$CONFIG_BEFORE_PATH" "${{ env.TRACE_DIR }}/config/setup_gki前/"
-            echo "✅ 已备份配置原始状态：${{ env.TRACE_DIR }}/config/setup_gki前/"
-          else
-            echo "⚠️ 配置目录不存在，跳过备份"
+          # 新增：备份配置文件（修改前）
+          CONFIG_PATH="./common/arch/arm64/configs"
+          if [ -d "$CONFIG_PATH" ]; then
+            cp -r "$CONFIG_PATH" "${{ env.BACKUP_DIR }}/config_setup前/"
           fi
 
-          # 执行main.bin setup_gki_config（原逻辑保留）
           cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
           chmod +x main.bin
           ./main.bin "setup_gki_config" "$ENABLE_B"
           rm -rf ./main.bin
 
-          # 新增：备份setup_gki_config后的配置文件（黑盒修改后）
-          CONFIG_AFTER_PATH="./common/arch/arm64/configs"
-          if [ -d "$CONFIG_AFTER_PATH" ]; then
-            cp -r "$CONFIG_AFTER_PATH" "${{ env.TRACE_DIR }}/config/setup_gki后/"
-            echo "✅ 已备份配置修改后状态：${{ env.TRACE_DIR }}/config/setup_gki后/"
-            
-            # 新增：生成配置差异日志（setup_gki前 vs setup_gki后）
-            if [ -d "${{ env.TRACE_DIR }}/config/setup_gki前/configs" ]; then
-              # 整体配置目录对比
-              diff -urN "${{ env.TRACE_DIR }}/config/setup_gki前/configs" "${{ env.TRACE_DIR }}/config/setup_gki后/configs" > "${{ env.TRACE_DIR }}/差异日志/config_整体改动.diff" 2>/dev/null
-              # 单独对比核心文件gki_defconfig（更直观）
-              diff -u "${{ env.TRACE_DIR }}/config/setup_gki前/configs/gki_defconfig" "${{ env.TRACE_DIR }}/config/setup_gki后/configs/gki_defconfig" > "${{ env.TRACE_DIR }}/差异日志/gki_defconfig_改动.diff" 2>/dev/null
-              
-              [ -s "${{ env.TRACE_DIR }}/差异日志/config_整体改动.diff" ] || echo "配置目录无改动" > "${{ env.TRACE_DIR }}/差异日志/config_整体改动.diff"
-              [ -s "${{ env.TRACE_DIR }}/差异日志/gki_defconfig_改动.diff" ] || echo "gki_defconfig无改动" > "${{ env.TRACE_DIR }}/差异日志/gki_defconfig_改动.diff"
-              echo "✅ 配置差异日志已生成：${{ env.TRACE_DIR }}/差异日志/"
-            else
-              echo "配置原始备份缺失，无法对比" > "${{ env.TRACE_DIR }}/差异日志/config_整体改动.diff"
-              echo "配置原始备份缺失，无法对比" > "${{ env.TRACE_DIR }}/差异日志/gki_defconfig_改动.diff"
+          # 新增：备份配置文件（修改后）并对比
+          if [ -d "$CONFIG_PATH" ]; then
+            cp -r "$CONFIG_PATH" "${{ env.BACKUP_DIR }}/config_setup后/"
+            # 生成配置差异日志
+            if [ -d "${{ env.BACKUP_DIR }}/config_setup前/configs" ]; then
+              diff -urN "${{ env.BACKUP_DIR }}/config_setup前/configs" "$CONFIG_PATH" > "${{ env.BACKUP_DIR }}/差异日志/配置差异.diff" 2>/dev/null
+              # 单独对比gki_defconfig
+              if [ -f "${{ env.BACKUP_DIR }}/config_setup前/configs/gki_defconfig" ] && [ -f "$CONFIG_PATH/gki_defconfig" ]; then
+                diff -u "${{ env.BACKUP_DIR }}/config_setup前/configs/gki_defconfig" "$CONFIG_PATH/gki_defconfig" > "${{ env.BACKUP_DIR }}/差异日志/gki_defconfig差异.diff" 2>/dev/null
+              fi
             fi
-          else
-            echo "⚠️ 配置修改后目录不存在"
           fi
 
-          # 原逻辑保留
           sudo sed -i 's/check_defconfig//' ./common/build.config.gki
           cd common
           git add -A && git commit -a -m "BUILD Kernel"
@@ -478,7 +441,7 @@ jobs:
           export CCACHE_HARDLINK="true"
           export CCACHE_DIR="${{ env.CCACHE_DIR }}"
           export CCACHE_MAXSIZE="8G"
-          export KBUILD_BUILD_TIMESTAMP="${KERNEL_TIME}"
+          export KBUILD_BUILD_TIMESTAMPESTAMP="${KERNEL_TIME}"
           cd kernel_workspace/kernel_platform/common
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  gki_defconfig
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  Image
@@ -533,13 +496,13 @@ jobs:
             fi
           fi
 
-      # 新增：上传黑盒追踪备份和差异日志（核心产出，用于替代黑盒）
-      - name: 📤 上传黑盒追踪数据（备份+差异日志）
+      # 新增：上传备份和差异日志
+      - name: 📤 上传备份与差异日志
         uses: actions/upload-artifact@v4
         with:
-          name: 黑盒追踪_${{ env.DEVICES_NAME }}_${{ github.run_id }}
-          path: ${{ env.TRACE_DIR }}/**/*
-          retention-days: 30  # 保留30天，足够分析
+          name: 备份与差异_${{ env.DEVICES_NAME }}_${{ github.run_id }}
+          path: ${{ env.BACKUP_DIR }}
+          retention-days: 30
 
       - name: 📤 Upload AnyKernel3 (上传刷包)
         uses: actions/upload-artifact@v4
