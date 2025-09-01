@@ -1,4 +1,4 @@
-name: Build_oneplus_sm8750 (含加密文件逆向监控)
+name: Build_oneplus_sm8750 (命令监控版)
 on:
   workflow_dispatch:
     inputs:
@@ -56,32 +56,30 @@ on:
 
 
 jobs:
-  build_with_reverse:
-    name: Build_${{ github.event.inputs.REPO_MANIFEST }}_With_Reverse
+  build_with_command_monitor:
+    name: Build_${{ github.event.inputs.REPO_MANIFEST }}_With_Command_Monitor
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 🕵️ 初始化加密文件逆向目录（修复版）
+      - name: 🕵️ 初始化命令监控目录（按执行场景拆分）
         run: |
-          REVERSE_DIR="${GITHUB_WORKSPACE}/加密文件逆向结果_${{ github.event.inputs.REPO_MANIFEST }}"
-          mkdir -p "$REVERSE_DIR"
-          mkdir -p "$REVERSE_DIR/setup_bin/执行前"
-          mkdir -p "$REVERSE_DIR/setup_bin/执行后"
-          mkdir -p "$REVERSE_DIR/setup_bin/命令日志"
-          mkdir -p "$REVERSE_DIR/setup_bin/文件差异"
-          mkdir -p "$REVERSE_DIR/main_bin_setup_lz4/执行前"
-          mkdir -p "$REVERSE_DIR/main_bin_setup_lz4/执行后"
-          mkdir -p "$REVERSE_DIR/main_bin_setup_lz4/命令日志"
-          mkdir -p "$REVERSE_DIR/main_bin_setup_lz4/文件差异"
-          mkdir -p "$REVERSE_DIR/main_bin_setup_gki/执行前"
-          mkdir -p "$REVERSE_DIR/main_bin_setup_gki/执行后"
-          mkdir -p "$REVERSE_DIR/main_bin_setup_gki/命令日志"
-          mkdir -p "$REVERSE_DIR/main_bin_setup_gki/文件差异"
-          echo "REVERSE_DIR=$REVERSE_DIR" >> $GITHUB_ENV
-          echo "✅ 逆向目录初始化完成：$REVERSE_DIR"
+          # 根目录：按加密文件和执行场景划分
+          MONITOR_DIR="${GITHUB_WORKSPACE}/命令监控日志_${{ github.event.inputs.REPO_MANIFEST }}"
+          
+          # 1. setup.bin 相关命令日志
+          mkdir -p "$MONITOR_DIR/setup_bin/执行命令日志"
+          
+          # 2. main.bin setup_lz4 相关命令日志
+          mkdir -p "$MONITOR_DIR/main_bin/setup_lz4/执行命令日志"
+          
+          # 3. main.bin setup_gki_config 相关命令日志
+          mkdir -p "$MONITOR_DIR/main_bin/setup_gki_config/执行命令日志"
+          
+          echo "MONITOR_DIR=$MONITOR_DIR" >> $GITHUB_ENV
+          echo "✅ 命令监控目录初始化完成：$MONITOR_DIR"
 
       - name: 📊 Check disk space (检查磁盘空间)
         run: |
@@ -199,7 +197,7 @@ jobs:
             libncurses-dev liblz4-tool zlib1g-dev \
             libxml2-utils rsync unzip strace
           
-          echo "✅ 依赖安装完成（含逆向所需strace）"
+          echo "✅ 依赖安装完成（含命令监控所需strace）"
           
       - name: 📥 Restore ccache (载入 机型：${{ env.DEVICES_NAME }}的 ccache 缓存)
         uses: actions/cache@v3
@@ -256,17 +254,8 @@ jobs:
             KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null || echo 13000) + 10700)
             echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
             
-            # 逆向setup.bin：执行前备份
-            echo "🕵️ 逆向setup.bin：执行前备份"
-            if [ ! -d "." ]; then
-              echo "::error ::当前目录不存在，无法备份"
-              exit 1
-            fi
-            cp -r . "${{ env.REVERSE_DIR }}/setup_bin/执行前"
-            echo "执行前备份目录结构："
-            ls -la "${{ env.REVERSE_DIR }}/setup_bin/执行前"
-            
-            # 执行setup.bin并监控
+            # 监控setup.bin执行的所有命令（单独目录存储）
+            echo "🕵️ 监控setup.bin执行的命令..."
             cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/setup.bin" ./
             chmod +x setup.bin
             if [ ! -f "setup.bin" ]; then
@@ -278,44 +267,23 @@ jobs:
               ls -la
               exit 1
             fi
-            echo "🕵️ 执行setup.bin并监控命令"
-            sudo strace -f -tt -T -e trace=execve,openat,write,unlink,chmod \
-              -o "${{ env.REVERSE_DIR }}/setup_bin/命令日志/setup.bin_strace.log" \
-              ./setup.bin 2>&1 | tee "${{ env.REVERSE_DIR }}/setup_bin/命令日志/setup.bin_执行输出.log"
+            
+            # 记录：执行时间、命令参数、系统调用、控制台输出
+            echo "执行时间: $(date -u)" > "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/执行信息.txt"
+            echo "执行命令: ./setup.bin" >> "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/执行信息.txt"
+            
+            # strace详细记录所有系统调用（重点跟踪execve即执行的命令）
+            sudo strace -f -tt -T -v -e trace=execve,openat,write \
+              -o "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/setup.bin系统调用跟踪.log" \
+              ./setup.bin 2>&1 | tee "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/setup.bin控制台输出.log"
+            
+            # 检查setup.bin是否执行成功
             SETUP_EXIT_CODE=${PIPESTATUS[0]}
             if [ $SETUP_EXIT_CODE -ne 0 ]; then
               echo "::error ::setup.bin执行失败，退出码=$SETUP_EXIT_CODE"
               exit $SETUP_EXIT_CODE
             fi
-            
-            # 逆向setup.bin：执行后备份+生成差异（核心修复：正确处理diff退出码）
-            echo "🕵️ 逆向setup.bin：执行后备份+生成差异"
-            cp -r . "${{ env.REVERSE_DIR }}/setup_bin/执行后"
-            echo "执行后备份目录结构："
-            ls -la "${{ env.REVERSE_DIR }}/setup_bin/执行后"
-            
-            DIFF_LOG="${{ env.REVERSE_DIR }}/setup_bin/文件差异/diff_error.log"
-            DIFF_OUTPUT="${{ env.REVERSE_DIR }}/setup_bin/文件差异/setup_bin_文件变化.diff"
-            echo "生成文件差异（结果保存到$DIFF_OUTPUT，错误日志到$DIFF_LOG）"
-            
-            # 执行diff并捕获退出码（关键修复）
-            diff -urN --no-dereference -a \
-              "${{ env.REVERSE_DIR }}/setup_bin/执行前" \
-              "${{ env.REVERSE_DIR }}/setup_bin/执行后" \
-              > "$DIFF_OUTPUT" 2> "$DIFF_LOG"
-            DIFF_EXIT_CODE=$?
-            
-            # 正确处理diff退出码：
-            # 0 = 无差异；1 = 有差异（正常）；2 = 错误（异常）
-            if [ $DIFF_EXIT_CODE -eq 2 ]; then
-              echo "⚠️ 文件差异生成错误，详细日志："
-              cat "$DIFF_LOG"
-              # 仅记录警告，不中断流程
-            elif [ $DIFF_EXIT_CODE -eq 1 ]; then
-              echo "✅ 文件差异生成成功（发现差异）"
-            else
-              echo "ℹ️ 未发现文件差异"
-            fi
+            echo "✅ setup.bin命令监控完成，日志已保存"
 
       - name: 🛠 替换SukiSU版本标识
         run: |
@@ -363,35 +331,32 @@ jobs:
                     fi
                 done
             
-                # 逆向main.bin(setup_lz4)：执行前备份
-                echo "🕵️ 逆向main.bin(setup_lz4)：执行前备份"
-                cp -r . "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/执行前"
-                
-                # 执行main.bin setup_lz4并监控
+                # 监控main.bin setup_lz4执行的所有命令（单独目录存储）
+                echo "🕵️ 监控main.bin setup_lz4执行的命令..."
                 cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
                 chmod +x main.bin
-                echo "🕵️ 执行main.bin setup_lz4并监控命令"
-                sudo strace -f -tt -T -e trace=execve,openat,write,unlink,chmod \
-                  -o "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/命令日志/main.bin_setup_lz4_strace.log" \
-                  ./main.bin "setup_lz4" 2>&1 | tee "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/命令日志/main.bin_setup_lz4_执行输出.log"
-                rm -rf ./main.bin
-                
-                # 逆向main.bin(setup_lz4)：执行后备份+生成差异
-                echo "🕵️ 逆向main.bin(setup_lz4)：执行后备份+生成差异"
-                cp -r . "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/执行后"
-                DIFF_LOG="${{ env.REVERSE_DIR }}/main_bin_setup_lz4/文件差异/diff_error.log"
-                DIFF_OUTPUT="${{ env.REVERSE_DIR }}/main_bin_setup_lz4/文件差异/main_bin_setup_lz4_文件变化.diff"
-                diff -urN --no-dereference -a \
-                  "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/执行前" \
-                  "${{ env.REVERSE_DIR }}/main_bin_setup_lz4/执行后" \
-                  > "$DIFF_OUTPUT" 2> "$DIFF_LOG"
-                DIFF_EXIT_CODE=$?
-                if [ $DIFF_EXIT_CODE -eq 2 ]; then
-                  echo "⚠️ main_bin_setup_lz4差异生成错误："
-                  cat "$DIFF_LOG"
-                elif [ $DIFF_EXIT_CODE -eq 1 ]; then
-                  echo "✅ main_bin_setup_lz4差异生成成功"
+                if [ ! -f "main.bin" ]; then
+                  echo "::error ::main.bin文件不存在"
+                  exit 1
                 fi
+                
+                # 记录执行元信息
+                echo "执行时间: $(date -u)" > "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/执行信息.txt"
+                echo "执行命令: ./main.bin setup_lz4" >> "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/执行信息.txt"
+                
+                # 详细跟踪系统调用和输出
+                sudo strace -f -tt -T -v -e trace=execve,openat,write \
+                  -o "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/main.bin_setup_lz4系统调用跟踪.log" \
+                  ./main.bin "setup_lz4" 2>&1 | tee "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/main.bin_setup_lz4控制台输出.log"
+                
+                # 检查执行结果
+                MAIN_LZ4_EXIT_CODE=${PIPESTATUS[0]}
+                if [ $MAIN_LZ4_EXIT_CODE -ne 0 ]; then
+                  echo "::error ::main.bin setup_lz4执行失败，退出码=$MAIN_LZ4_EXIT_CODE"
+                  exit $MAIN_LZ4_EXIT_CODE
+                fi
+                rm -rf ./main.bin
+                echo "✅ main.bin setup_lz4命令监控完成，日志已保存"
             fi
             
             if [ "${REPO_MANIFEST}" = "realme_GT7pro_Speed" ] && [ "${REPO_MANIFEST}" = "realme_GT7pro" ]; then
@@ -435,35 +400,33 @@ jobs:
         run: |
           cd kernel_workspace/kernel_platform
           
-          # 逆向main.bin(setup_gki_config)：执行前备份
-          echo "🕵️ 逆向main.bin(setup_gki_config)：执行前备份"
-          cp -r . "${{ env.REVERSE_DIR }}/main_bin_setup_gki/执行前"
-          
-          # 执行main.bin setup_gki_config并监控
+          # 监控main.bin setup_gki_config执行的所有命令（单独目录存储）
+          echo "🕵️ 监控main.bin setup_gki_config执行的命令..."
           cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
           chmod +x main.bin
-          echo "🕵️ 执行main.bin setup_gki_config并监控命令"
-          sudo strace -f -tt -T -e trace=execve,openat,write,unlink,chmod \
-            -o "${{ env.REVERSE_DIR }}/main_bin_setup_gki/命令日志/main.bin_setup_gki_strace.log" \
-            ./main.bin "setup_gki_config" "$ENABLE_B" 2>&1 | tee "${{ env.REVERSE_DIR }}/main_bin_setup_gki/命令日志/main.bin_setup_gki_执行输出.log"
-          rm -rf ./main.bin
-          
-          # 逆向main.bin(setup_gki_config)：执行后备份+生成差异
-          echo "🕵️ 逆向main.bin(setup_gki_config)：执行后备份+生成差异"
-          cp -r . "${{ env.REVERSE_DIR }}/main_bin_setup_gki/执行后"
-          DIFF_LOG="${{ env.REVERSE_DIR }}/main_bin_setup_gki/文件差异/diff_error.log"
-          DIFF_OUTPUT="${{ env.REVERSE_DIR }}/main_bin_setup_gki/文件差异/main_bin_setup_gki_文件变化.diff"
-          diff -urN --no-dereference -a \
-            "${{ env.REVERSE_DIR }}/main_bin_setup_gki/执行前" \
-            "${{ env.REVERSE_DIR }}/main_bin_setup_gki/执行后" \
-            > "$DIFF_OUTPUT" 2> "$DIFF_LOG"
-          DIFF_EXIT_CODE=$?
-          if [ $DIFF_EXIT_CODE -eq 2 ]; then
-            echo "⚠️ main_bin_setup_gki差异生成错误："
-            cat "$DIFF_LOG"
-          elif [ $DIFF_EXIT_CODE -eq 1 ]; then
-            echo "✅ main_bin_setup_gki差异生成成功"
+          if [ ! -f "main.bin" ]; then
+            echo "::error ::main.bin文件不存在"
+            exit 1
           fi
+          
+          # 记录执行元信息
+          echo "执行时间: $(date -u)" > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
+          echo "执行命令: ./main.bin setup_gki_config $ENABLE_B" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
+          echo "网络调度参数: $ENABLE_B" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
+          
+          # 详细跟踪系统调用和输出
+          sudo strace -f -tt -T -v -e trace=execve,openat,write \
+            -o "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin_setup_gki_config系统调用跟踪.log" \
+            ./main.bin "setup_gki_config" "$ENABLE_B" 2>&1 | tee "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin_setup_gki_config控制台输出.log"
+          
+          # 检查执行结果
+          MAIN_GKI_EXIT_CODE=${PIPESTATUS[0]}
+          if [ $MAIN_GKI_EXIT_CODE -ne 0 ]; then
+            echo "::error ::main.bin setup_gki_config执行失败，退出码=$MAIN_GKI_EXIT_CODE"
+            exit $MAIN_GKI_EXIT_CODE
+          fi
+          rm -rf ./main.bin
+          echo "✅ main.bin setup_gki_config命令监控完成，日志已保存"
           
           # Remove check_defconfig
           sudo sed -i 's/check_defconfig//' ./common/build.config.gki
@@ -591,9 +554,9 @@ jobs:
           name: AK3_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_SuKiSU${{ github.event.inputs.KPM == 'true' && '_KPM' || '' }}${{ github.event.inputs.enable_feature_z == 'true' && '_SCHED' || '' }}
           path: ./AnyKernel3/*
 
-      - name: 📤 上传加密文件逆向结果
+      - name: 📤 上传按场景区分的命令监控日志
         uses: actions/upload-artifact@v4
         with:
-          name: 加密文件逆向结果_${{ env.DEVICES_NAME }}_${{ github.run_id }}
-          path: ${{ env.REVERSE_DIR }}/**/*
+          name: 命令监控日志_${{ env.DEVICES_NAME }}_${{ github.run_id }}
+          path: ${{ env.MONITOR_DIR }}/**/*
           retention-days: 90
