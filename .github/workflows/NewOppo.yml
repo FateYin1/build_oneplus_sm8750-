@@ -43,7 +43,7 @@ jobs:
               ;;
           esac
 
-      - name: 📦 安装依赖（含监控工具）
+      - name: 📦 安装依赖
         run: |
           sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock
           sudo apt update -y
@@ -51,7 +51,6 @@ jobs:
             git ccache inotify-tools strace coreutils python3 python3-pip \
             build-essential libelf-dev flex bison libssl-dev
           sudo apt remove -y repo || true
-          echo "✅ 依赖安装完成"
 
       - name: 📥 安装最新版Repo工具
         run: |
@@ -77,13 +76,12 @@ jobs:
           export PATH="/home/runner/bin:$PATH"
           mkdir -p kernel_workspace && cd kernel_workspace
           
-          # 初始化repo并显示详细日志
           repo init -u https://github.com/showdo/kernel_manifest.git \
             -b refs/heads/oneplus/sm8750 \
             -m ${REPO_MANIFEST}.xml \
             --depth=1 || { echo "❌ repo init失败"; exit 1; }
           
-          # 同步源码（增加重试机制）
+          # 同步重试机制
           for i in {1..3}; do
             repo sync -c -j$(nproc) --no-tags --no-clone-bundle && break
             if [ $i -eq 3 ]; then
@@ -94,36 +92,100 @@ jobs:
             sleep 5
           done
           
-          # 强制验证核心目录是否存在
-          COMMON_DIR="kernel_platform/common"
-          if [ ! -d "$COMMON_DIR" ]; then
-            echo "❌ 核心目录不存在：$COMMON_DIR"
-            echo "当前目录结构："
-            ls -la
-            ls -la kernel_platform || true  # 显示kernel_platform下的内容
+          # 打印源码根目录结构（关键调试信息）
+          echo "=== 源码根目录结构（kernel_workspace） ==="
+          ls -la
+          
+          # 自动探测common目录（适配可能的结构差异）
+          COMMON_CANDIDATES=(
+            "kernel_platform/common"
+            "kernel/common"  # 备选路径1
+            "common"         # 备选路径2
+            "platform/common" # 备选路径3
+          )
+          FOUND_COMMON=""
+          for candidate in "${COMMON_CANDIDATES[@]}"; do
+            if [ -d "$candidate" ]; then
+              FOUND_COMMON="$candidate"
+              break
+            fi
+          done
+          
+          if [ -z "$FOUND_COMMON" ]; then
+            echo "❌ 未找到common目录，候选路径："
+            printf "%s\n" "${COMMON_CANDIDATES[@]}"
             exit 1
+          else
+            echo "✅ 找到common目录：$FOUND_COMMON"
+            echo "COMMON_DIR=$FOUND_COMMON" >> $GITHUB_ENV  # 存入环境变量
           fi
-          echo "✅ 源码同步完成，核心目录存在"
 
       - name: 🔍 监控并生成LZ4/ZSTD补丁（含汇编文件）
         run: |
-          # 定义路径（基于同步后的实际结构）
-          COMMON_DIR="kernel_workspace/kernel_platform/common"
-          LZ4_DIR="$COMMON_DIR/lib/lz4"
-          ZSTD_DIR="$COMMON_DIR/lib/zstd"
+          # 从环境变量获取实际common目录（关键修复）
+          COMMON_DIR="${{ env.COMMON_DIR }}"
+          echo "使用的common目录：$COMMON_DIR"
+          
+          # 定义LZ4/ZSTD目录（增加备选路径）
+          LZ4_CANDIDATES=(
+            "$COMMON_DIR/lib/lz4"
+            "$COMMON_DIR/lz4"  # 备选路径
+            "$COMMON_DIR/compression/lz4"  # 备选路径
+          )
+          ZSTD_CANDIDATES=(
+            "$COMMON_DIR/lib/zstd"
+            "$COMMON_DIR/zstd"  # 备选路径
+            "$COMMON_DIR/compression/zstd"  # 备选路径
+          )
+          
+          # 自动探测LZ4目录
+          FOUND_LZ4=""
+          for candidate in "${LZ4_CANDIDATES[@]}"; do
+            if [ -d "$candidate" ]; then
+              FOUND_LZ4="$candidate"
+              break
+            fi
+          done
+          if [ -z "$FOUND_LZ4" ]; then
+            echo "❌ 未找到LZ4目录，候选路径："
+            printf "%s\n" "${LZ4_CANDIDATES[@]}"
+            exit 1
+          else
+            echo "✅ 找到LZ4目录：$FOUND_LZ4"
+            LZ4_DIR="$FOUND_LZ4"
+          fi
+          
+          # 自动探测ZSTD目录
+          FOUND_ZSTD=""
+          for candidate in "${ZSTD_CANDIDATES[@]}"; do
+            if [ -d "$candidate" ]; then
+              FOUND_ZSTD="$candidate"
+              break
+            fi
+          done
+          if [ -z "$FOUND_ZSTD" ]; then
+            echo "❌ 未找到ZSTD目录，候选路径："
+            printf "%s\n" "${ZSTD_CANDIDATES[@]}"
+            exit 1
+          else
+            echo "✅ 找到ZSTD目录：$FOUND_ZSTD"
+            ZSTD_DIR="$FOUND_ZSTD"
+          fi
+          
+          # 定义其他路径
           BACKUP_DIR="${GITHUB_WORKSPACE}/lz4_zstd_backup"
           PATCH_DIR="${GITHUB_WORKSPACE}/lz4_zstd_patches"
           MONITOR_LOG="${GITHUB_WORKSPACE}/monitor_logs"
           mkdir -p "$BACKUP_DIR" "$PATCH_DIR" "$MONITOR_LOG"
 
-          # -------------------------- 修复1：配置Git用户身份（关键） --------------------------
+          # 配置Git用户身份
           echo "📋 配置Git用户身份"
           cd "$COMMON_DIR"
-          git config user.email "action@github.com"  # 局部配置，仅当前仓库生效
-          git config user.name "GitHub Action"       # 避免全局配置问题
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
 
-          # -------------------------- 1. 备份原始文件 --------------------------
-          echo "📋 备份LZ4/ZSTD原始文件"
+          # 备份原始文件（仅备份存在的目录）
+          echo "📋 备份LZ4原始文件"
           find "$LZ4_DIR" -type f \( -name "*.c" -o -name "*.h" -o -name "*.s" -o -name "Makefile" -o -name "*.mk" \) | while read -r file; do
             rel_path="${file#$COMMON_DIR/}"
             mkdir -p "$BACKUP_DIR/$(dirname "$rel_path")"
@@ -131,6 +193,7 @@ jobs:
             echo "✅ 备份LZ4文件：$rel_path"
           done
           
+          echo "📋 备份ZSTD原始文件"
           find "$ZSTD_DIR" -type f \( -name "*.c" -o -name "*.h" -o -name "*.s" -o -name "Makefile" -o -name "*.mk" \) | while read -r file; do
             rel_path="${file#$COMMON_DIR/}"
             mkdir -p "$BACKUP_DIR/$(dirname "$rel_path")"
@@ -138,7 +201,7 @@ jobs:
             echo "✅ 备份ZSTD文件：$rel_path"
           done
 
-          # -------------------------- 2. 启动监控 --------------------------
+          # 启动监控
           echo "🔍 启动监控"
           INOTIFY_LOG="$MONITOR_LOG/inotify.log"
           inotifywait -m -r \
@@ -149,16 +212,15 @@ jobs:
           INOTIFY_PID=$!
           echo "inotify监控PID：$INOTIFY_PID"
           
-          # 记录Git基准状态（现在已配置用户身份，不会报错）
+          # 记录Git基准状态
           cd "$COMMON_DIR"
           git add -A
-          git commit -m "Initial state before main.bin" || true  # 允许空提交
+          git commit -m "Initial state before main.bin" || true
           INIT_COMMIT=$(git rev-parse HEAD)
           echo "git基准提交：$INIT_COMMIT"
 
-          # -------------------------- 3. 执行main.bin --------------------------
+          # 执行main.bin
           echo "🔧 执行main.bin"
-          # 修复2：强制验证目录存在后再执行
           if [ ! -d "$COMMON_DIR" ]; then
             echo "❌ 目录不存在：$COMMON_DIR"
             exit 1
@@ -179,19 +241,19 @@ jobs:
           kill $INOTIFY_PID
           rm -f main.bin
 
-          # -------------------------- 4. 分析结果 --------------------------
+          # 分析结果
           echo "📊 分析改动文件"
-          git diff "$INIT_COMMIT" --name-only | grep -E "^lib/lz4/|^lib/zstd/" > "$MONITOR_LOG/git_changed.txt"
+          git diff "$INIT_COMMIT" --name-only | grep -E "$(echo "$LZ4_DIR|$ZSTD_DIR" | sed "s|$COMMON_DIR/||g")" > "$MONITOR_LOG/git_changed.txt"
           grep -E "$LZ4_DIR|$ZSTD_DIR" "$INOTIFY_LOG" | awk '{print $3}' | sed "s|$COMMON_DIR/||" >> "$MONITOR_LOG/inotify_changed.txt"
           grep -E "$LZ4_DIR|$ZSTD_DIR" "$STRACE_LOG" | awk -F'"' '{print $2}' | sed "s|$COMMON_DIR/||" >> "$MONITOR_LOG/strace_changed.txt"
           
           cat "$MONITOR_LOG/git_changed.txt" "$MONITOR_LOG/inotify_changed.txt" "$MONITOR_LOG/strace_changed.txt" \
-            | sort | uniq | grep -E "^lib/lz4/|^lib/zstd/" > "$MONITOR_LOG/all_changed.txt"
+            | sort | uniq > "$MONITOR_LOG/all_changed.txt"
           
           echo "=== 检测到的改动文件 ==="
           cat "$MONITOR_LOG/all_changed.txt"
 
-          # -------------------------- 5. 生成补丁 --------------------------
+          # 生成补丁
           echo "🔨 生成补丁"
           while read -r file; do
             if [ -f "$BACKUP_DIR/$file" ] && [ -f "$COMMON_DIR/$file" ]; then
