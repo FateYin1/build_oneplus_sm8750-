@@ -1,9 +1,9 @@
-name: LZ4_ZSTD_Patch_Generator
+name: LZ4_ZSTD_Patch_Capture_Only
 on:
   workflow_dispatch:
     inputs:
       REPO_MANIFEST:
-        description: "选择机型"
+        description: "📝选择机型"
         required: true
         type: choice
         options:
@@ -19,14 +19,23 @@ on:
 
 
 jobs:
-  build:
+  capture_patch:
+    name: Capture_LZ4_ZSTD_Patch_${{ github.event.inputs.REPO_MANIFEST }}
     runs-on: ubuntu-latest
     steps:
+      # 1. 检出仓库代码（含main.bin等必要文件）
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: ⚙️ 设置机型环境变量
+      # 2. 检查磁盘空间
+      - name: 📊 Check disk space
+        run: |
+          echo "构建前磁盘空间："
+          df -h
+
+      # 3. 设置机型环境变量（匹配原始逻辑）
+      - name: ⚙️ Set REPO_MANIFEST & DEVICES_NAME
         run: |
           case "${{ github.event.inputs.REPO_MANIFEST }}" in
             oneplus_ace5_pro)
@@ -42,241 +51,236 @@ jobs:
               echo "DEVICES_NAME=${{ github.event.inputs.REPO_MANIFEST }}" >> $GITHUB_ENV
               ;;
           esac
+          # 修复原始脚本中自定义时间变量引用错误
+          if [ "${{ github.event.inputs.keep_original_settings }}" = "false" ] && [ -n "${{ github.event.inputs.custom_kernel_suffix }}" ]; then
+            echo "KERNEL_TIME=${{ github.event.inputs.custom_kernel_time }}" >> $GITHUB_ENV
+          else
+            case "${{ github.event.inputs.REPO_MANIFEST }}" in
+              oneplus_13 | oneplus_ace5_pro)
+                echo 'KERNEL_TIME=Mon May 12 09:09:59 UTC 2025' >> $GITHUB_ENV
+                ;;
+              *)
+                echo 'KERNEL_TIME=Mon May 12 09:09:59 UTC 2025' >> $GITHUB_ENV  # 统一默认时间
+                ;;
+            esac
+          fi
 
-      - name: 📦 安装依赖
+      # 4. 配置Git账户（确保后续git操作正常）
+      - name: 📦 Configure Git
         run: |
+          git config --global user.name "FateYin1"
+          git config --global user.email "1244243922@qq.com"
+
+      # 5. 配置APT缓存并安装依赖（含diff工具）
+      - name: 🛠 Configure APT & Install dependencies
+        run: |
+          # 配置APT缓存
+          APT_CACHE_DIR="$HOME/apt-cache"
+          mkdir -p "$APT_CACHE_DIR"/{archives,lists/partial}
+          echo "Dir::Cache \"$APT_CACHE_DIR\";" | sudo tee /etc/apt/apt.conf.d/90user-cache
+          echo "Dir::Cache::archives \"$APT_CACHE_DIR/archives\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
+          sudo chown -R $USER:$USER "$APT_CACHE_DIR"
+
+          # 安装依赖（含diff所需的coreutils）
           sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock
-          sudo apt update -y
-          sudo apt install -y \
-            git ccache inotify-tools strace coreutils python3 python3-pip \
-            build-essential libelf-dev flex bison libssl-dev
+          sudo apt -o Dir::Cache="$APT_CACHE_DIR" update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt -o Dir::Cache="$APT_CACHE_DIR" install -yq --no-install-recommends \
+            python3 git curl libelf-dev \
+            build-essential flex bison libssl-dev \
+            liblz4-tool zlib1g-dev rsync unzip coreutils  # coreutils提供diff工具
+
+      # 6. 安装并修复repo工具（解决版本警告）
+      - name: 📥 Install & Fix repo tool
+        run: |
+          # 卸载旧版repo（避免冲突）
           sudo apt remove -y repo || true
+          # 安装最新版repo
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
+          chmod a+x ~/repo
+          sudo mv ~/repo /usr/local/bin/repo
+          # 修复Python utcnow()语法警告
+          sudo sed -i 's/import datetime/import datetime\nfrom datetime import UTC/' /usr/local/bin/repo
+          sudo sed -i 's/datetime.datetime.utcnow()/datetime.datetime.now(UTC)/g' /usr/local/bin/repo
+          # 验证repo
+          echo "repo路径：$(which repo)"
+          echo "repo版本：$(repo --version | head -n1)"
 
-      - name: 📥 安装最新版Repo工具
+      # 7. 同步内核源码（原始逻辑完整保留）
+      - name: 📥 Sync kernel source
         run: |
-          REPO_BIN_DIR="/home/runner/bin"
-          mkdir -p "$REPO_BIN_DIR"
-          export PATH="$REPO_BIN_DIR:$PATH"
-          
-          curl -fL https://storage.googleapis.com/git-repo-downloads/repo > "$REPO_BIN_DIR/repo"
-          chmod a+x "$REPO_BIN_DIR/repo"
-          sed -i 's/import datetime/import datetime\nfrom datetime import UTC/' "$REPO_BIN_DIR/repo"
-          sed -i 's/datetime.datetime.utcnow()/datetime.datetime.now(UTC)/g' "$REPO_BIN_DIR/repo"
-          
-          hash -r
-          if command -v repo &> /dev/null; then
-            echo "✅ repo安装成功：$(which repo)"
-          else
-            echo "❌ repo安装失败"
+          mkdir kernel_workspace && cd kernel_workspace
+          repo init -u https://github.com/showdo/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m ${REPO_MANIFEST}.xml --depth=1
+          repo --trace sync -c -j$(nproc --all) --no-tags
+          # 清理冗余文件（原始逻辑）
+          rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
+          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
+          # 验证源码核心目录
+          if [ ! -d "kernel_platform/common/lib/lz4" ]; then
+            echo "::error ::LZ4核心目录不存在：kernel_platform/common/lib/lz4"
             exit 1
           fi
 
-      - name: 📥 同步内核源码（强化验证）
+      # 8. 配置SuKiSU Ultra（原始逻辑，确保后续SUSFS配置正常）
+      - name: ⚙️ Set SuKiSU Ultra
         run: |
-          export PATH="/home/runner/bin:$PATH"
-          mkdir -p kernel_workspace && cd kernel_workspace
+          mkdir -p kernel_workspace/kernel_platform
+          cd kernel_workspace/kernel_platform
           
-          repo init -u https://github.com/showdo/kernel_manifest.git \
-            -b refs/heads/oneplus/sm8750 \
-            -m ${REPO_MANIFEST}.xml \
-            --depth=1 || { echo "❌ repo init失败"; exit 1; }
+          # 拉取SuKiSU脚本并执行
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/susfs-main/kernel/setup.sh" -o setup.sh && bash setup.sh susfs-main
+          cd KernelSU
+          KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null || echo 13000) + 10700)
+          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
           
-          # 同步重试机制
-          for i in {1..3}; do
-            repo sync -c -j$(nproc) --no-tags --no-clone-bundle && break
-            if [ $i -eq 3 ]; then
-              echo "❌ repo sync重试3次失败"
-              exit 1
-            fi
-            echo "⚠️ repo sync失败，重试第$i次"
-            sleep 5
-          done
-          
-          # 打印源码根目录结构（关键调试信息）
-          echo "=== 源码根目录结构（kernel_workspace） ==="
-          ls -la
-          
-          # 自动探测common目录（适配可能的结构差异）
-          COMMON_CANDIDATES=(
-            "kernel_platform/common"
-            "kernel/common"  # 备选路径1
-            "common"         # 备选路径2
-            "platform/common" # 备选路径3
-          )
-          FOUND_COMMON=""
-          for candidate in "${COMMON_CANDIDATES[@]}"; do
-            if [ -d "$candidate" ]; then
-              FOUND_COMMON="$candidate"
-              break
-            fi
-          done
-          
-          if [ -z "$FOUND_COMMON" ]; then
-            echo "❌ 未找到common目录，候选路径："
-            printf "%s\n" "${COMMON_CANDIDATES[@]}"
+          # 执行setup.bin（原始逻辑）
+          cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/setup.bin" ./
+          chmod +x setup.bin
+          if [ ! -f "kernel/Makefile" ]; then
+            echo "::error ::kernel/Makefile不存在"
             exit 1
-          else
-            echo "✅ 找到common目录：$FOUND_COMMON"
-            echo "COMMON_DIR=$FOUND_COMMON" >> $GITHUB_ENV  # 存入环境变量
           fi
+          ./setup.bin
 
-      - name: 🔍 监控并生成LZ4/ZSTD补丁（含汇编文件）
+      # 9. 替换SuKiSU版本标识（原始逻辑，避免冲突）
+      - name: 🛠 Replace SuKiSU version tag
         run: |
-          # 从环境变量获取实际common目录（关键修复）
-          COMMON_DIR="${{ env.COMMON_DIR }}"
-          echo "使用的common目录：$COMMON_DIR"
-          
-          # 定义LZ4/ZSTD目录（增加备选路径）
-          LZ4_CANDIDATES=(
-            "$COMMON_DIR/lib/lz4"
-            "$COMMON_DIR/lz4"  # 备选路径
-            "$COMMON_DIR/compression/lz4"  # 备选路径
-          )
-          ZSTD_CANDIDATES=(
-            "$COMMON_DIR/lib/zstd"
-            "$COMMON_DIR/zstd"  # 备选路径
-            "$COMMON_DIR/compression/zstd"  # 备选路径
-          )
-          
-          # 自动探测LZ4目录
-          FOUND_LZ4=""
-          for candidate in "${LZ4_CANDIDATES[@]}"; do
-            if [ -d "$candidate" ]; then
-              FOUND_LZ4="$candidate"
-              break
-            fi
-          done
-          if [ -z "$FOUND_LZ4" ]; then
-            echo "❌ 未找到LZ4目录，候选路径："
-            printf "%s\n" "${LZ4_CANDIDATES[@]}"
-            exit 1
+          cd kernel_workspace/kernel_platform
+          TARGET_FILES=$(grep -rl "TG@qdykernel" . || true)
+          if [ -n "$TARGET_FILES" ]; then
+            sed -i 's/TG@qdykernel/酷安Fate007/g' $TARGET_FILES
+            echo "✅ 版本标识替换完成"
           else
-            echo "✅ 找到LZ4目录：$FOUND_LZ4"
-            LZ4_DIR="$FOUND_LZ4"
+            echo "⚠️ 未找到目标标识文件"
           fi
+
+      # 10. 备份LZ4/ZSTD原始文件（含汇编文件）
+      - name: 📋 Backup original LZ4/ZSTD files (include .s)
+        run: |
+          # 核心路径（原始脚本已确定）
+          COMMON_DIR="kernel_workspace/kernel_platform/common"
+          LZ4_DIR="$COMMON_DIR/lib/lz4"
+          # 自动查找ZSTD目录（适配可能的路径）
+          ZSTD_DIR=$(find "$COMMON_DIR" -type d -name "zstd" | grep -E "(lib|compression)/zstd" | head -1 || true)
           
-          # 自动探测ZSTD目录
-          FOUND_ZSTD=""
-          for candidate in "${ZSTD_CANDIDATES[@]}"; do
-            if [ -d "$candidate" ]; then
-              FOUND_ZSTD="$candidate"
-              break
-            fi
-          done
-          if [ -z "$FOUND_ZSTD" ]; then
-            echo "❌ 未找到ZSTD目录，候选路径："
-            printf "%s\n" "${ZSTD_CANDIDATES[@]}"
-            exit 1
+          # 备份目录（独立存储，不干扰原始源码）
+          BACKUP_DIR="${GITHUB_WORKSPACE}/lz4_zstd_original_backup"
+          mkdir -p "$BACKUP_DIR"
+          
+          # 备份LZ4所有文件（含.c/.h/.s/Makefile）
+          echo "✅ 备份LZ4目录：$LZ4_DIR"
+          cp -r "$LZ4_DIR" "$BACKUP_DIR/lib/lz4"
+          
+          # 备份ZSTD（若存在）
+          if [ -n "$ZSTD_DIR" ] && [ -d "$ZSTD_DIR" ]; then
+            ZSTD_REL_PATH="${ZSTD_DIR#$COMMON_DIR/}"
+            echo "✅ 备份ZSTD目录：$ZSTD_DIR"
+            mkdir -p "$BACKUP_DIR/$(dirname "$ZSTD_REL_PATH")"
+            cp -r "$ZSTD_DIR" "$BACKUP_DIR/$ZSTD_REL_PATH"
           else
-            echo "✅ 找到ZSTD目录：$FOUND_ZSTD"
-            ZSTD_DIR="$FOUND_ZSTD"
+            echo "⚠️ 未找到ZSTD目录，跳过备份"
           fi
-          
-          # 定义其他路径
-          BACKUP_DIR="${GITHUB_WORKSPACE}/lz4_zstd_backup"
-          PATCH_DIR="${GITHUB_WORKSPACE}/lz4_zstd_patches"
-          MONITOR_LOG="${GITHUB_WORKSPACE}/monitor_logs"
-          mkdir -p "$BACKUP_DIR" "$PATCH_DIR" "$MONITOR_LOG"
 
-          # 配置Git用户身份
-          echo "📋 配置Git用户身份"
-          cd "$COMMON_DIR"
-          git config user.email "action@github.com"
-          git config user.name "GitHub Action"
-
-          # 备份原始文件（仅备份存在的目录）
-          echo "📋 备份LZ4原始文件"
-          find "$LZ4_DIR" -type f \( -name "*.c" -o -name "*.h" -o -name "*.s" -o -name "Makefile" -o -name "*.mk" \) | while read -r file; do
-            rel_path="${file#$COMMON_DIR/}"
-            mkdir -p "$BACKUP_DIR/$(dirname "$rel_path")"
-            cp "$file" "$BACKUP_DIR/$rel_path"
-            echo "✅ 备份LZ4文件：$rel_path"
-          done
+      # 11. 配置SUSFS + 执行main.bin修改LZ4（核心步骤，触发改动）
+      - name: 🔧 Set up SUSFS & run main.bin
+        run: |
+          cd kernel_workspace
+          # 拉取SUSFS和SukiSU_patch（原始逻辑）
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
+          git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
           
-          echo "📋 备份ZSTD原始文件"
-          find "$ZSTD_DIR" -type f \( -name "*.c" -o -name "*.h" -o -name "*.s" -o -name "Makefile" -o -name "*.mk" \) | while read -r file; do
-            rel_path="${file#$COMMON_DIR/}"
-            mkdir -p "$BACKUP_DIR/$(dirname "$rel_path")"
-            cp "$file" "$BACKUP_DIR/$rel_path"
-            echo "✅ 备份ZSTD文件：$rel_path"
-          done
-
-          # 启动监控
-          echo "🔍 启动监控"
-          INOTIFY_LOG="$MONITOR_LOG/inotify.log"
-          inotifywait -m -r \
-            --timefmt "%Y-%m-%d %H:%M:%S" \
-            --format "%T %e %w%f" \
-            -e create -e delete -e modify -e move \
-            "$LZ4_DIR" "$ZSTD_DIR" > "$INOTIFY_LOG" 2>&1 &
-          INOTIFY_PID=$!
-          echo "inotify监控PID：$INOTIFY_PID"
+          cd kernel_platform
+          # 复制SUSFS补丁文件（原始逻辑）
+          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
+          cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
+          cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
           
-          # 记录Git基准状态
-          cd "$COMMON_DIR"
-          git add -A
-          git commit -m "Initial state before main.bin" || true
-          INIT_COMMIT=$(git rev-parse HEAD)
-          echo "git基准提交：$INIT_COMMIT"
-
-          # 执行main.bin
-          echo "🔧 执行main.bin"
-          if [ ! -d "$COMMON_DIR" ]; then
-            echo "❌ 目录不存在：$COMMON_DIR"
-            exit 1
-          fi
-          cd "$COMMON_DIR"
+          # 复制SukiSU_patch文件（原始逻辑）
+          cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./common/include/linux
+          cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./common/lib
+          cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./common/crypto
+          cp -r ../SukiSU_patch/other/zram/lz4k_oplus ./common/lib/
           
-          MAIN_BIN_PATH="${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin"
-          if [ ! -f "$MAIN_BIN_PATH" ]; then
-            echo "❌ 未找到main.bin：$MAIN_BIN_PATH"
-            exit 1
-          fi
-          cp "$MAIN_BIN_PATH" ./
-          chmod +x main.bin
-          
-          STRACE_LOG="$MONITOR_LOG/strace.log"
-          strace -f -e trace=file -o "$STRACE_LOG" ./main.bin "setup_lz4"
-          
-          kill $INOTIFY_PID
-          rm -f main.bin
-
-          # 分析结果
-          echo "📊 分析改动文件"
-          git diff "$INIT_COMMIT" --name-only | grep -E "$(echo "$LZ4_DIR|$ZSTD_DIR" | sed "s|$COMMON_DIR/||g")" > "$MONITOR_LOG/git_changed.txt"
-          grep -E "$LZ4_DIR|$ZSTD_DIR" "$INOTIFY_LOG" | awk '{print $3}' | sed "s|$COMMON_DIR/||" >> "$MONITOR_LOG/inotify_changed.txt"
-          grep -E "$LZ4_DIR|$ZSTD_DIR" "$STRACE_LOG" | awk -F'"' '{print $2}' | sed "s|$COMMON_DIR/||" >> "$MONITOR_LOG/strace_changed.txt"
-          
-          cat "$MONITOR_LOG/git_changed.txt" "$MONITOR_LOG/inotify_changed.txt" "$MONITOR_LOG/strace_changed.txt" \
-            | sort | uniq > "$MONITOR_LOG/all_changed.txt"
-          
-          echo "=== 检测到的改动文件 ==="
-          cat "$MONITOR_LOG/all_changed.txt"
-
-          # 生成补丁
-          echo "🔨 生成补丁"
-          while read -r file; do
-            if [ -f "$BACKUP_DIR/$file" ] && [ -f "$COMMON_DIR/$file" ]; then
-              patch_filename="$(echo "$file" | tr '/' '_').patch"
-              diff -u -w "$BACKUP_DIR/$file" "$COMMON_DIR/$file" > "$PATCH_DIR/$patch_filename"
-              if [ -s "$PATCH_DIR/$patch_filename" ]; then
-                echo "✅ 生成补丁：$patch_filename"
-              else
-                rm "$PATCH_DIR/$patch_filename"
+          # 执行main.bin修改LZ4（核心触发步骤）
+          cd ./common
+          if [ "$DEVICES_NAME" != "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "realme_GT7" ]; then
+            # 删除旧LZ4文件（原始逻辑）
+            files=(
+              "lib/lz4/lz4_compress.c"
+              "lib/lz4/lz4_decompress.c"
+              "lib/lz4/lz4defs.h"
+              "lib/lz4/lz4hc_compress.c"
+            )
+            for file in "${files[@]}"; do
+              if [ -e "$file" ]; then
+                rm "$file"
               fi
-            elif [ ! -f "$BACKUP_DIR/$file" ] && [ -f "$COMMON_DIR/$file" ]; then
-              new_file_path="$PATCH_DIR/$file"
-              mkdir -p "$(dirname "$new_file_path")"
-              cp "$COMMON_DIR/$file" "$new_file_path"
-              echo "✅ 保存新增文件：$file"
-            fi
-          done < "$MONITOR_LOG/all_changed.txt"
+            done
+            # 执行加密脚本main.bin
+            cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
+            chmod +x main.bin
+            ./main.bin "setup_lz4"
+            rm -rf ./main.bin  # 清理临时文件
+            echo "✅ main.bin执行完成，LZ4已修改"
+          fi
 
-      - name: 📤 上传产物
+      # 12. 生成LZ4/ZSTD补丁（含汇编文件，最终目标步骤）
+      - name: 🔨 Generate LZ4/ZSTD patches (include .s)
+        run: |
+          # 核心路径定义
+          COMMON_DIR="kernel_workspace/kernel_platform/common"
+          LZ4_DIR="$COMMON_DIR/lib/lz4"
+          ZSTD_DIR=$(find "$COMMON_DIR" -type d -name "zstd" | grep -E "(lib|compression)/zstd" | head -1 || true)
+          BACKUP_DIR="${GITHUB_WORKSPACE}/lz4_zstd_original_backup"
+          PATCH_DIR="${GITHUB_WORKSPACE}/final_lz4_zstd_patches"
+          mkdir -p "$PATCH_DIR"
+
+          # 生成LZ4完整补丁（对比备份与修改后文件）
+          echo "=== 生成LZ4补丁 ==="
+          if [ -d "$BACKUP_DIR/lib/lz4" ] && [ -d "$LZ4_DIR" ]; then
+            # -u: 显示差异，-r: 递归对比目录，-N:  treat absent files as empty
+            diff -urN "$BACKUP_DIR/lib/lz4" "$LZ4_DIR" > "$PATCH_DIR/lz4_patch_with_asm.patch"
+            # 验证补丁有效性（非空则保留）
+            if [ -s "$PATCH_DIR/lz4_patch_with_asm.patch" ]; then
+              echo "✅ LZ4补丁生成成功：lz4_patch_with_asm.patch"
+              echo "补丁大小：$(du -sh "$PATCH_DIR/lz4_patch_with_asm.patch" | awk '{print $1}')"
+            else
+              rm "$PATCH_DIR/lz4_patch_with_asm.patch"
+              echo "⚠️ LZ4无实际改动，未生成补丁"
+            fi
+          else
+            echo "❌ LZ4目录缺失，无法生成补丁"
+          fi
+
+          # 生成ZSTD补丁（若ZSTD存在）
+          echo -e "\n=== 生成ZSTD补丁 ==="
+          if [ -n "$ZSTD_DIR" ] && [ -d "$ZSTD_DIR" ] && [ -d "$BACKUP_DIR/$(basename "$ZSTD_DIR")" ]; then
+            ZSTD_REL_PATH="${ZSTD_DIR#$COMMON_DIR/}"
+            diff -urN "$BACKUP_DIR/$ZSTD_REL_PATH" "$ZSTD_DIR" > "$PATCH_DIR/zstd_patch_with_asm.patch"
+            if [ -s "$PATCH_DIR/zstd_patch_with_asm.patch" ]; then
+              echo "✅ ZSTD补丁生成成功：zstd_patch_with_asm.patch"
+              echo "补丁大小：$(du -sh "$PATCH_DIR/zstd_patch_with_asm.patch" | awk '{print $1}')"
+            else
+              rm "$PATCH_DIR/zstd_patch_with_asm.patch"
+              echo "⚠️ ZSTD无实际改动，未生成补丁"
+            fi
+          else
+            echo "⚠️ ZSTD目录缺失或未改动，跳过补丁生成"
+          fi
+
+          # 输出补丁列表
+          echo -e "\n=== 最终补丁列表 ==="
+          if [ -n "$(ls -A "$PATCH_DIR" 2>/dev/null)" ]; then
+            ls -l "$PATCH_DIR"
+          else
+            echo "❌ 未生成任何补丁"
+          fi
+
+      # 13. 上传最终补丁产物（供后续移植使用）
+      - name: 📤 Upload LZ4/ZSTD patches
         uses: actions/upload-artifact@v4
         with:
-          name: lz4_zstd_patches_with_asm_${{ env.DEVICES_NAME }}
+          name: LZ4_ZSTD_Patches_${{ env.DEVICES_NAME }}
           path: |
-            ./lz4_zstd_patches/
-            ./monitor_logs/
-          retention-days: 365
+            ./final_lz4_zstd_patches/*        # 最终生成的补丁（含汇编）
+            ./lz4_zstd_original_backup/*     # 原始文件备份（对比用）
+          retention-days: 365  # 长期保留，便于后续更新移植
