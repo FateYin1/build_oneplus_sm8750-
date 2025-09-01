@@ -1,4 +1,4 @@
-name: Build_oneplus_sm8750 (修复环境检测版)
+name: Build_oneplus_sm8750 (强化环境模拟版)
 on:
   workflow_dispatch:
     inputs:
@@ -66,27 +66,17 @@ jobs:
 
       - name: 🕵️ 初始化命令监控目录（按执行场景拆分）
         run: |
-          # 根目录：按加密文件和执行场景划分
           MONITOR_DIR="${GITHUB_WORKSPACE}/命令监控日志_${{ github.event.inputs.REPO_MANIFEST }}"
-          
-          # 1. setup.bin 相关命令日志
           mkdir -p "$MONITOR_DIR/setup_bin/执行命令日志"
-          
-          # 2. main.bin setup_lz4 相关命令日志
           mkdir -p "$MONITOR_DIR/main_bin/setup_lz4/执行命令日志"
-          
-          # 3. main.bin setup_gki_config 相关命令日志
           mkdir -p "$MONITOR_DIR/main_bin/setup_gki_config/执行命令日志"
-          
           echo "MONITOR_DIR=$MONITOR_DIR" >> $GITHUB_ENV
           echo "✅ 命令监控目录初始化完成：$MONITOR_DIR"
 
-      - name: 📊 Check disk space (检查磁盘空间)
-        run: |
-          echo "构建前磁盘空间："
-          df -h
+      - name: 📊 Check disk space
+        run: df -h
       
-      - name: ⚙️ Set REPO_MANIFEST (设置对应机型配置文件)
+      - name: ⚙️ Set REPO_MANIFEST
         run: |
           case "${{ github.event.inputs.REPO_MANIFEST }}" in
             oneplus_ace5_pro)
@@ -128,7 +118,6 @@ jobs:
           if [ "${{ github.event.inputs.keep_original_settings }}" = "false" ] && [ -n "${{ github.event.inputs.custom_kernel_suffix }}" ]; then
             CUSTOM_TIME="${{ github.event.inputs.custom_kernel_time }}"
             [ -z "$CUSTOM_TIME" ] && CUSTOM_TIME="$(date -u +"%a %b %d %H:%M:%S UTC %Y")"
-            echo "使用自定义构建时间: $CUSTOM_TIME"
             echo "KERNEL_TIME=$CUSTOM_TIME" >> $GITHUB_ENV
             echo "DEFAULT_SUFFIX=${{ github.event.inputs.custom_kernel_suffix }}" >> $GITHUB_ENV
           else
@@ -157,16 +146,15 @@ jobs:
             esac
           fi
           
-      - name: ⚙️ Set device-specific CCACHE_DIR (设置对应机型Cceche路径)
-        run: |
-          echo "CCACHE_DIR=$HOME/.ccache_${REPO_MANIFEST}" >> $GITHUB_ENV
+      - name: ⚙️ Set device-specific CCACHE_DIR
+        run: echo "CCACHE_DIR=$HOME/.ccache_${REPO_MANIFEST}" >> $GITHUB_ENV
 
-      - name: 📦 Configure Git (设置下载账户)
+      - name: 📦 Configure Git
         run: |
           git config --global user.name "FateYin1"
           git config --global user.email "1244243922@qq.com"
 
-      - name: 🛠 Configure APT caching (配置APT缓存)
+      - name: 🛠 Configure APT caching
         run: |
           APT_CACHE_DIR="$HOME/apt-cache"
           mkdir -p "$APT_CACHE_DIR"/{archives,lists/partial}
@@ -177,7 +165,7 @@ jobs:
           echo "Acquire::Languages \"none\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
           sudo chown -R $USER:$USER "$APT_CACHE_DIR"
 
-      - name: 🛠 Cache APT packages (缓存APT包)
+      - name: 🛠 Cache APT packages
         uses: actions/cache@v3
         with:
           path: ${{ env.HOME }}/apt-cache
@@ -185,7 +173,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-apt-
 
-      - name: 📦 Install dependencies (安装依赖)
+      - name: 📦 Install dependencies
         run: |
           sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock
           APT_CACHE_DIR="$HOME/apt-cache"
@@ -197,9 +185,9 @@ jobs:
             libncurses-dev liblz4-tool zlib1g-dev \
             libxml2-utils rsync unzip strace
           
-          echo "✅ 依赖安装完成（含命令监控所需strace）"
+          echo "✅ 依赖安装完成"
           
-      - name: 📥 Restore ccache (载入 机型：${{ env.DEVICES_NAME }}的 ccache 缓存)
+      - name: 📥 Restore ccache
         uses: actions/cache@v3
         with:
           path: ${{ env.CCACHE_DIR }}
@@ -208,7 +196,7 @@ jobs:
             ccache-${{ runner.os }}-${{ env.REPO_MANIFEST }}-
             ccache-${{ runner.os }}-
 
-      - name: 📥 Init ccache (如果是第一次运行则初始化Cceche)
+      - name: 📥 Init ccache
         run: |
           export CCACHE_COMPILERCHECK="%compiler% -dumpmachine; %compiler% -dumpversion"
           export CCACHE_NOHASHDIR="true"
@@ -230,13 +218,13 @@ jobs:
             echo "未安装 ccache，跳过"
           fi
 
-      - name: 📥 Install repo tool (下载repo工具)
+      - name: 📥 Install repo tool
         run: |
          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
          chmod a+x ~/repo
          sudo mv ~/repo /usr/local/bin/repo
 
-      - name: 📥 Initialize repo and sync (初始化repo并同步内核源码)
+      - name: 📥 Initialize repo and sync
         run: |
          mkdir kernel_workspace && cd kernel_workspace
          repo init -u https://github.com/showdo/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m ${REPO_MANIFEST}.xml --depth=1
@@ -244,7 +232,7 @@ jobs:
          rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
          
-      - name: ⚙️ Set SuKiSU Ultra (设置SuKiSU Ultra)
+      - name: ⚙️ Set SuKiSU Ultra
         run: |
             mkdir -p kernel_workspace/kernel_platform
             cd kernel_workspace/kernel_platform
@@ -254,7 +242,7 @@ jobs:
             KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null || echo 13000) + 10700)
             echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
             
-            # 监控setup.bin执行的所有命令（单独目录存储）
+            # 监控setup.bin执行（强化环境变量）
             echo "🕵️ 监控setup.bin执行的命令..."
             cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/setup.bin" ./
             chmod +x setup.bin
@@ -262,50 +250,52 @@ jobs:
               echo "::error ::setup.bin文件不存在"
               exit 1
             fi
-            if [ ! -f "kernel/Makefile" ]; then
-              echo "::error ::kernel/Makefile不存在"
-              ls -la
-              exit 1
-            fi
             
-            # 设置GitHub Actions环境变量（绕过环境检测）
+            # 核心修复1：模拟完整GitHub Actions环境变量集
             export GITHUB_ACTIONS="true"
+            export CI="true"
+            export RUNNER_USER="runner"
+            export HOME="/home/runner"
             export GITHUB_WORKFLOW="${{ github.workflow }}"
             export GITHUB_RUN_ID="${{ github.run_id }}"
             export GITHUB_REPOSITORY="${{ github.repository }}"
+            export GITHUB_REF="${{ github.ref }}"
+            export GITHUB_SHA="${{ github.sha }}"
+            export RUNNER_OS="Linux"
+            export RUNNER_ARCH="X64"
             
-            # 记录：执行时间、命令参数、系统调用、控制台输出
+            # 记录环境变量用于调试
+            env | grep -E "GITHUB_|CI|RUNNER_|HOME" > "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/环境变量.txt"
+            
+            # 记录执行信息
             echo "执行时间: $(date -u)" > "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/执行信息.txt"
             echo "执行命令: ./setup.bin" >> "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/执行信息.txt"
-            echo "环境变量: GITHUB_ACTIONS=true, GITHUB_WORKFLOW=${{ github.workflow }}" >> "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/执行信息.txt"
             
-            # strace详细记录所有系统调用（重点跟踪execve即执行的命令）
-            sudo strace -f -tt -T -v -e trace=execve,openat,write \
+            # 核心修复2：使用sudo -E保留环境变量执行
+            sudo -E strace -f -tt -T -v -e trace=execve,openat,write,getuid,getgid \
               -o "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/setup.bin系统调用跟踪.log" \
               ./setup.bin 2>&1 | tee "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/setup.bin控制台输出.log"
             
-            # 检查setup.bin是否执行成功
+            # 检查执行结果
             SETUP_EXIT_CODE=${PIPESTATUS[0]}
             if [ $SETUP_EXIT_CODE -ne 0 ]; then
               echo "::error ::setup.bin执行失败，退出码=$SETUP_EXIT_CODE"
               exit $SETUP_EXIT_CODE
             fi
-            echo "✅ setup.bin命令监控完成，日志已保存"
+            echo "✅ setup.bin命令监控完成"
 
       - name: 🛠 替换SukiSU版本标识
         run: |
          cd kernel_workspace/kernel_platform
          TARGET_FILES=$(grep -rl "TG@qdykernel" . || true)
           if [ -n "$TARGET_FILES" ]; then
-            echo "发现需要替换的文件："
-            echo "$TARGET_FILES"
             sed -i 's/TG@qdykernel/酷安Fate007/g' $TARGET_FILES
             echo "✅ 标识替换完成"
           else
-            echo "⚠️ 未找到目标标识文件，继续执行"
+            echo "⚠️ 未找到目标标识文件"
           fi
 
-      - name: 🔧 Set up SUSFS (配置 SUSFS)
+      - name: 🔧 Set up SUSFS
         run: |
            cd kernel_workspace
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
@@ -323,7 +313,7 @@ jobs:
             if [ "$DEVICES_NAME" = "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "oneplus_13t" ]; then
             sed -i 's/^\(SUBLEVEL[[:space:]]*=[[:space:]]*\).*/\166/' ./common/Makefile
             fi
-            # Apply patches
+            
             cd ./common
             if [ "$DEVICES_NAME" != "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "realme_GT7" ]; then
                 files=(
@@ -333,34 +323,37 @@ jobs:
                     "lib/lz4/lz4hc_compress.c"
                 )
                 for file in "${files[@]}"; do
-                    if [ -e "$file" ]; then
-                        rm "$file"
-                    fi
+                    [ -e "$file" ] && rm "$file"
                 done
             
-                # 监控main.bin setup_lz4执行的所有命令（单独目录存储）
+                # 监控main.bin setup_lz4执行（强化环境模拟）
                 echo "🕵️ 监控main.bin setup_lz4执行的命令..."
                 cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
                 chmod +x main.bin
-                if [ ! -f "main.bin" ]; then
-                  echo "::error ::main.bin文件不存在"
-                  exit 1
-                fi
+                [ ! -f "main.bin" ] && { echo "::error ::main.bin文件不存在"; exit 1; }
                 
-                # 关键修复：设置GitHub Actions环境变量，绕过环境检测
+                # 核心修复：完整环境变量模拟
                 export GITHUB_ACTIONS="true"
+                export CI="true"
+                export RUNNER_USER="runner"
+                export HOME="/home/runner"
                 export GITHUB_WORKFLOW="${{ github.workflow }}"
                 export GITHUB_RUN_ID="${{ github.run_id }}"
                 export GITHUB_REPOSITORY="${{ github.repository }}"
-                export CI="true"  # 增加CI环境变量，强化环境伪装
+                export GITHUB_REF="${{ github.ref }}"
+                export GITHUB_SHA="${{ github.sha }}"
+                export RUNNER_OS="Linux"
+                export RUNNER_ARCH="X64"
                 
-                # 记录执行元信息
+                # 记录环境变量
+                env | grep -E "GITHUB_|CI|RUNNER_|HOME" > "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/环境变量.txt"
+                
+                # 记录执行信息
                 echo "执行时间: $(date -u)" > "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/执行信息.txt"
                 echo "执行命令: ./main.bin setup_lz4" >> "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/执行信息.txt"
-                echo "环境变量: GITHUB_ACTIONS=true, CI=true" >> "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/执行信息.txt"
                 
-                # 详细跟踪系统调用和输出
-                sudo strace -f -tt -T -v -e trace=execve,openat,write \
+                # 使用sudo -E保留环境变量，并跟踪用户ID检查
+                sudo -E strace -f -tt -T -v -e trace=execve,openat,write,getuid,getgid,stat \
                   -o "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/main.bin_setup_lz4系统调用跟踪.log" \
                   ./main.bin "setup_lz4" 2>&1 | tee "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/main.bin_setup_lz4控制台输出.log"
                 
@@ -371,7 +364,7 @@ jobs:
                   exit $MAIN_LZ4_EXIT_CODE
                 fi
                 rm -rf ./main.bin
-                echo "✅ main.bin setup_lz4命令监控完成，日志已保存"
+                echo "✅ main.bin setup_lz4命令监控完成"
             fi
             
             if [ "${REPO_MANIFEST}" = "realme_GT7pro_Speed" ] && [ "${REPO_MANIFEST}" = "realme_GT7pro" ]; then
@@ -385,7 +378,7 @@ jobs:
             
             echo "完成"
 
-      - name: 🔧 Cache HMBird patch (缓存HMBird补丁)
+      - name: 🔧 Cache HMBird patch
         uses: actions/cache@v3
         with:
           path: ${{ runner.temp }}/hmbird_patch.c
@@ -393,52 +386,52 @@ jobs:
           restore-keys: |
             hmbird-patch-v1
             
-      - name: 🔧 Apply HMBird GKI patch (写入单Boot开机补丁)
+      - name: 🔧 Apply HMBird GKI patch
         run: |
           PATCH_FILE="${{ runner.temp }}/hmbird_patch.c"
-          if [ ! -f "$PATCH_FILE" ]; then
-            echo "下载HMBird补丁..."
-            cp "${GITHUB_WORKSPACE}/hmbird_patch.c" "$PATCH_FILE"
-          fi
+          [ ! -f "$PATCH_FILE" ] && cp "${GITHUB_WORKSPACE}/hmbird_patch.c" "$PATCH_FILE"
           
           cd kernel_workspace/kernel_platform/common/drivers
           cp "$PATCH_FILE" hmbird_patch.c
           
-          if ! grep -q "hmbird_patch.o" Makefile; then
-            echo "obj-y += hmbird_patch.o" >> Makefile
-          fi
+          grep -q "hmbird_patch.o" Makefile || echo "obj-y += hmbird_patch.o" >> Makefile
           echo "HMBird补丁应用完成"
 
-      - name: 🔧 Set gki_defconfig (设置编译配置)
+      - name: 🔧 Set gki_defconfig
         env:
           ENABLE_B: ${{ github.event.inputs.enable_feature_b }}       
         run: |
           cd kernel_workspace/kernel_platform
           
-          # 监控main.bin setup_gki_config执行的所有命令（单独目录存储）
+          # 监控main.bin setup_gki_config执行（强化环境模拟）
           echo "🕵️ 监控main.bin setup_gki_config执行的命令..."
           cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
           chmod +x main.bin
-          if [ ! -f "main.bin" ]; then
-            echo "::error ::main.bin文件不存在"
-            exit 1
-          fi
+          [ ! -f "main.bin" ] && { echo "::error ::main.bin文件不存在"; exit 1; }
           
-          # 关键修复：设置GitHub Actions环境变量，绕过环境检测
+          # 核心修复：完整环境变量模拟
           export GITHUB_ACTIONS="true"
+          export CI="true"
+          export RUNNER_USER="runner"
+          export HOME="/home/runner"
           export GITHUB_WORKFLOW="${{ github.workflow }}"
           export GITHUB_RUN_ID="${{ github.run_id }}"
           export GITHUB_REPOSITORY="${{ github.repository }}"
-          export CI="true"  # 增加CI环境变量，强化环境伪装
+          export GITHUB_REF="${{ github.ref }}"
+          export GITHUB_SHA="${{ github.sha }}"
+          export RUNNER_OS="Linux"
+          export RUNNER_ARCH="X64"
           
-          # 记录执行元信息
+          # 记录环境变量
+          env | grep -E "GITHUB_|CI|RUNNER_|HOME" > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/环境变量.txt"
+          
+          # 记录执行信息
           echo "执行时间: $(date -u)" > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
           echo "执行命令: ./main.bin setup_gki_config $ENABLE_B" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
           echo "网络调度参数: $ENABLE_B" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
-          echo "环境变量: GITHUB_ACTIONS=true, CI=true" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
           
-          # 详细跟踪系统调用和输出
-          sudo strace -f -tt -T -v -e trace=execve,openat,write \
+          # 使用sudo -E保留环境变量，并跟踪更多系统调用
+          sudo -E strace -f -tt -T -v -e trace=execve,openat,write,getuid,getgid,stat,access \
             -o "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin_setup_gki_config系统调用跟踪.log" \
             ./main.bin "setup_gki_config" "$ENABLE_B" 2>&1 | tee "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/main.bin_setup_gki_config控制台输出.log"
           
@@ -449,45 +442,35 @@ jobs:
             exit $MAIN_GKI_EXIT_CODE
           fi
           rm -rf ./main.bin
-          echo "✅ main.bin setup_gki_config命令监控完成，日志已保存"
+          echo "✅ main.bin setup_gki_config命令监控完成"
           
-          # Remove check_defconfig
           sudo sed -i 's/check_defconfig//' ./common/build.config.gki
           cd common
           git add -A && git commit -a -m "BUILD Kernel"
 
-      - name: 🔧 Set Kernel name (设置内核名称)
+      - name: 🔧 Set Kernel name
         env:
           KEEP_ORIGINAL: ${{ github.event.inputs.keep_original_settings }}
           CUSTOM_SUFFIX: ${{ github.event.inputs.custom_kernel_suffix }}
         run: |
           cd kernel_workspace/kernel_platform
           echo "保持原设置: $KEEP_ORIGINAL"
-          echo "自定义后缀: $CUSTOM_SUFFIX"
-          echo "默认后缀: $DEFAULT_SUFFIX"
-          
-          if [ "$KEEP_ORIGINAL" = "false" ]; then
-            if [ -n "$CUSTOM_SUFFIX" ]; then
-              DEFAULT_SUFFIX="$CUSTOM_SUFFIX"
-              echo "使用自定义内核名称: $DEFAULT_SUFFIX"
-            else
-              echo "使用机型默认内核名称: $DEFAULT_SUFFIX"
-            fi
-          else
-            echo "保持原内核名称设置"
+          if [ "$KEEP_ORIGINAL" = "false" ] && [ -n "$CUSTOM_SUFFIX" ]; then
+            DEFAULT_SUFFIX="$CUSTOM_SUFFIX"
+            echo "使用自定义内核名称: $DEFAULT_SUFFIX"
           fi
           ESCAPED_SUFFIX=$(printf '%s\n' "$DEFAULT_SUFFIX" | sed 's:[\/&]:\\&:g')
           sudo sed -i "s/-4k/$ESCAPED_SUFFIX/g" ./common/arch/arm64/configs/gki_defconfig
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
 
-      - name: 🔧 Enable KPM Config (启用KPM配置)
+      - name: 🔧 Enable KPM Config
         if: ${{ github.event.inputs.KPM == 'true' }}
         run: |
           cd kernel_workspace/kernel_platform
           echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
           sed -i 's/check_defconfig//' ./common/build.config.gki
           
-      - name: 🔧 Add sched_ext (写入风驰补丁)
+      - name: 🔧 Add sched_ext
         if: ${{inputs.enable_feature_z }}
         run: |
          cd kernel_workspace/kernel_platform/
@@ -496,7 +479,7 @@ jobs:
          rm -rf ./sched_ext/.git
          cd common/kernel/sched  
 
-      - name: 📦 Archive kernel source and upload to Release (打包源码并上传到Release)
+      - name: 📦 Archive kernel source
         env:
          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -505,10 +488,10 @@ jobs:
          cd ..
 
          RELEASE_TAG="source-${{ github.run_id }}"
-         gh release create "$RELEASE_TAG" "kernel_source_${{ github.run_id }}.zip" --title "Source for $RELEASE_TAG" --notes "Auto-uploaded kernel source after all patching and before build." --repo $GITHUB_REPOSITORY || \
+         gh release create "$RELEASE_TAG" "kernel_source_${{ github.run_id }}.zip" --title "Source for $RELEASE_TAG" --notes "Auto-uploaded kernel source" --repo $GITHUB_REPOSITORY || \
          gh release upload "$RELEASE_TAG" "kernel_source_${{ github.run_id }}.zip" --repo $GITHUB_REPOSITORY
 
-      - name: 🔨 Build Kernel (构建内核)
+      - name: 🔨 Build Kernel
         run: |
           export PATH="/usr/lib/ccache:$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"          
           export CCACHE_COMPILERCHECK="%compiler% -dumpmachine; %compiler% -dumpversion"
@@ -521,7 +504,7 @@ jobs:
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  gki_defconfig
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  Image
 
-      - name: 🔨Apply KPM patch(应用KPM补丁)
+      - name: 🔨Apply KPM patch
         if: ${{ github.event.inputs.KPM == 'true' }}
         run: |
            cd kernel_workspace/kernel_platform/common/out/arch/arm64/boot
@@ -531,29 +514,18 @@ jobs:
            rm -f Image
            mv oImage Image
            
-      - name: 📦 Make AnyKernel3 (创建AnyKernel3刷包)
+      - name: 📦 Make AnyKernel3
         run: |
           git clone https://github.com/FateYin1/AnyKernel3 --depth=1
           rm -rf ./AnyKernel3/.git
           
-          image_path=""
-          if [ -f "kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image" ]; then
-            image_path="kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image"
-          elif [ -f "kernel_workspace/kernel_platform/out/arch/arm64/boot/Image" ]; then
-            image_path="kernel_workspace/kernel_platform/out/arch/arm64/boot/Image"
-          else
-            image_path=$(find "kernel_workspace/kernel_platform" -name "Image" | grep -E "boot/Image$" | head -n1)
-          fi
-          
-          if [ -z "$image_path" ] || [ ! -f "$image_path" ]; then
-            echo "::error ::未找到Image文件，构建失败"
-            exit 1
-          fi
+          image_path=$(find "kernel_workspace/kernel_platform" -name "Image" | grep -E "boot/Image$" | head -n1)
+          [ -z "$image_path" ] && { echo "::error ::未找到Image文件"; exit 1; }
           
           echo "✅ Image文件路径: $image_path"
           cp "$image_path" ./AnyKernel3/Image
 
-      - name: 📥 Download SukiSU Ultra APK (下载管理器)
+      - name: 📥 Download SukiSU Ultra APK
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -561,23 +533,21 @@ jobs:
           run_id=$(gh api \
             "repos/SukiSU-Ultra/SukiSU-Ultra/actions/workflows/build-manager.yml/runs?branch=main&status=success&per_page=1" \
             --jq '.workflow_runs[0].id' || echo "")
-          if [[ -n "$run_id" ]]; then
-            artifact_url=$(gh api \
-              "repos/SukiSU-Ultra/SukiSU-Ultra/actions/runs/$run_id/artifacts" | \
-              jq -r '.artifacts[] | select(.name == "manager") | .archive_download_url' | head -n1)
-            if [[ -n "$artifact_url" ]]; then
+          [ -n "$run_id" ] && {
+            artifact_url=$(gh api "repos/SukiSU-Ultra/SukiSU-Ultra/actions/runs/$run_id/artifacts" | jq -r '.artifacts[] | select(.name == "manager") | .archive_download_url' | head -n1)
+            [ -n "$artifact_url" ] && {
               curl -fL -H "Authorization: token $GITHUB_TOKEN" -o manager.zip "$artifact_url"
               unzip -j manager.zip "*.apk" -d ./AnyKernel3/
-            fi
-          fi
+            
+          }
 
-      - name: 📤 Upload AnyKernel3 (上传刷包)
+      - name: 📤 Upload AnyKernel3
         uses: actions/upload-artifact@v4
         with:
           name: AK3_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_SuKiSU${{ github.event.inputs.KPM == 'true' && '_KPM' || '' }}${{ github.event.inputs.enable_feature_z == 'true' && '_SCHED' || '' }}
           path: ./AnyKernel3/*
 
-      - name: 📤 上传按场景区分的命令监控日志
+      - name: 📤 上传命令监控日志
         uses: actions/upload-artifact@v4
         with:
           name: 命令监控日志_${{ env.DEVICES_NAME }}_${{ github.run_id }}
