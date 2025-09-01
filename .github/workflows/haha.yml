@@ -1,4 +1,4 @@
-name: Build_oneplus_sm8750 (main.bin内部调试版)
+name: Build_oneplus_sm8750 (完整带调试)
 on:
   workflow_dispatch:
     inputs:
@@ -17,124 +17,611 @@ on:
           - 'realme_GT7pro_Speed'
         default: 'oneplus_13'
 
-      # 其他输入参数保持不变...
       keep_original_settings:
-        description: "📝保持原内核名称及构建时间"
+        description: "📝保持原内核名称及构建时间(不懂请保持默认)"
         required: false
         default: true
         type: boolean
-      # ...省略其他参数
+
+      custom_kernel_suffix:
+        description: "✏️ 自定义内核名称- 仅在取消勾选'保持原设置'时有效"
+        required: false
+        default: ''
+      
+      custom_kernel_time:
+        description: "⏰ 自定义构建时间- 仅在取消勾选'保持原设置'时有效"
+        required: false
+        default: ''
+
+      enable_feature_z:
+        description: "添加风驰驱动"
+        required: false
+        default: true
+        type: boolean
+
+      enable_feature_b:
+         description: "选择网络调度"
+         required: false
+         type: choice
+         options:
+            - 'FQ_CODEL'
+            - 'BBR'
+         default: 'FQ_CODEL'
+      
+      KPM:
+        type: boolean
+        description: "是否启用内核模块(KPM)？"
+        required: true
+        default: true
+
 
 jobs:
-  build_with_command_monitor:
+  build_with_debug:
+    name: Build_${{ github.event.inputs.REPO_MANIFEST }}_Full
     runs-on: ubuntu-latest
     steps:
-      # 省略前面相同步骤（依赖安装、repo同步等）
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: 🔧 Set gki_defconfig（main.bin内部调试）
+      - name: 🕵️ 初始化调试监控目录
+        run: |
+          MONITOR_DIR="${GITHUB_WORKSPACE}/debug_logs_${{ github.event.inputs.REPO_MANIFEST }}"
+          BACKUP_DIR="${MONITOR_DIR}/file_backups"
+          mkdir -p "$MONITOR_DIR/setup_bin" "$MONITOR_DIR/main_bin_lz4" "$MONITOR_DIR/main_bin_gki"
+          mkdir -p "$BACKUP_DIR/pre_setup_bin" "$BACKUP_DIR/post_setup_bin"
+          mkdir -p "$BACKUP_DIR/pre_main_lz4" "$BACKUP_DIR/post_main_lz4"
+          mkdir -p "$BACKUP_DIR/pre_main_gki" "$BACKUP_DIR/post_main_gki"
+          echo "MONITOR_DIR=$MONITOR_DIR" >> $GITHUB_ENV
+          echo "BACKUP_DIR=$BACKUP_DIR" >> $GITHUB_ENV
+          echo "✅ 调试目录初始化完成: $MONITOR_DIR"
+
+      - name: 📊 检查磁盘空间
+        run: df -h
+
+      - name: ⚙️ 设置机型环境变量
+        run: |
+          case "${{ github.event.inputs.REPO_MANIFEST }}" in
+            oneplus_ace5_pro)
+              echo "REPO_MANIFEST=JiuGeFaCai_oneplus_ace5_pro_v" >> $GITHUB_ENV
+              echo "DEVICES_NAME=oneplus_ace5_pro" >> $GITHUB_ENV
+              ;;
+            oneplus_13)
+              echo "REPO_MANIFEST=JiuGeFaCai_oneplus_13_v" >> $GITHUB_ENV
+              echo "DEVICES_NAME=oneplus_13" >> $GITHUB_ENV
+              ;;
+            *)
+              echo "REPO_MANIFEST=${{ github.event.inputs.REPO_MANIFEST }}" >> $GITHUB_ENV
+              echo "DEVICES_NAME=${{ github.event.inputs.REPO_MANIFEST }}" >> $GITHUB_ENV
+              ;;
+          esac
+          
+          # 设置内核版本后缀
+          case "${{ github.event.inputs.REPO_MANIFEST }}" in
+            oneplus_13 | oneplus_ace5_pro)
+              echo 'DEFAULT_SUFFIX=-android15-8-g4dc61d72e02f-abogki415959920-4k' >> $GITHUB_ENV
+              ;;
+            realme_GT7pro_Speed)
+              echo 'DEFAULT_SUFFIX=-android15-8-g013ec21bba94-abogki383916444-4k' >> $GITHUB_ENV
+              ;;
+            realme_GT7)
+              echo 'DEFAULT_SUFFIX=-android15-8-g06c41a4a6e98-abogki395793266-4k' >> $GITHUB_ENV
+              ;;
+            realme_GT7pro)
+              echo 'DEFAULT_SUFFIX=-android15-8-gc6f5283046c6-ab12364222-4k' >> $GITHUB_ENV
+              ;;
+            oneplus_13t)
+              echo 'DEFAULT_SUFFIX=-android15-8-gd43086512890-abogki423825152-4k' >> $GITHUB_ENV
+              ;;
+            oneplus_pad_2_pro)
+              echo 'DEFAULT_SUFFIX=-android15-8-g7b1f455c7143-ab13591283-4k' >> $GITHUB_ENV
+              ;;
+            oneplus_ace5_ultra)
+              echo 'DEFAULT_SUFFIX=-android15-8-g29d86c5fc9dd-abogki428889875-4k' >> $GITHUB_ENV
+              ;;
+          esac
+          
+          # 设置构建时间
+          if [ "${{ github.event.inputs.keep_original_settings }}" = "false" ] && [ -n "${{ github.event.inputs.custom_kernel_suffix }}" ]; then
+            CUSTOM_TIME="${{ github.event.inputs.custom_kernel_time }}"
+            [ -z "$CUSTOM_TIME" ] && CUSTOM_TIME="$(date -u +"%a %b %d %H:%M:%S UTC %Y")"
+            echo "KERNEL_TIME=$CUSTOM_TIME" >> $GITHUB_ENV
+            echo "DEFAULT_SUFFIX=${{ github.event.inputs.custom_kernel_suffix }}" >> $GITHUB_ENV
+          else
+            case "${{ github.event.inputs.REPO_MANIFEST }}" in
+              oneplus_13 | oneplus_ace5_pro)
+                echo 'KERNEL_TIME=Mon May 12 09:09:59 UTC 2025' >> $GITHUB_ENV
+                ;;
+              realme_GT7pro_Speed)
+                echo 'KERNEL_TIME=Tue Dec 17 23:36:49 UTC 2024' >> $GITHUB_ENV
+                ;;
+              realme_GT7)
+                echo 'KERNEL_TIME=Mon Jan 20 03:24:58 UTC 2025' >> $GITHUB_ENV
+                ;;
+              realme_GT7pro)
+                echo 'KERNEL_TIME=Fri Sep 13 02:08:57 UTC 2024' >> $GITHUB_ENV
+                ;;
+              oneplus_13t)
+                echo 'KERNEL_TIME=Tue Jun 10 12:12:23 UTC 2025' >> $GITHUB_ENV
+                ;;
+              oneplus_pad_2_pro)
+                echo 'KERNEL_TIME=Tue Jun  3 03:22:33 UTC 2025' >> $GITHUB_ENV
+                ;;
+              oneplus_ace5_ultra)
+                echo 'KERNEL_TIME=Tue Jul  1 19:48:18 UTC 2025' >> $GITHUB_ENV
+                ;;
+            esac
+          fi
+
+      - name: ⚙️ 设置CCACHE目录
+        run: echo "CCACHE_DIR=$HOME/.ccache_${REPO_MANIFEST}" >> $GITHUB_ENV
+
+      - name: 📦 配置Git
+        run: |
+          git config --global user.name "FateYin1"
+          git config --global user.email "1244243922@qq.com"
+
+      - name: 🛠 配置APT缓存
+        run: |
+          APT_CACHE_DIR="$HOME/apt-cache"
+          mkdir -p "$APT_CACHE_DIR"/{archives,lists/partial}
+          echo "Dir::Cache \"$APT_CACHE_DIR\";" | sudo tee /etc/apt/apt.conf.d/90user-cache
+          echo "Dir::Cache::archives \"$APT_CACHE_DIR/archives\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
+          echo "Dir::State::lists \"$APT_CACHE_DIR/lists\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
+          echo "Acquire::Check-Valid-Until \"false\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
+          echo "Acquire::Languages \"none\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
+          sudo chown -R $USER:$USER "$APT_CACHE_DIR"
+
+      - name: 🛠 缓存APT包
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.HOME }}/apt-cache
+          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/Build_oneplus_sm8750.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
+      - name: 📦 安装依赖
+        run: |
+          sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock
+          APT_CACHE_DIR="$HOME/apt-cache"
+          mkdir -p "$APT_CACHE_DIR/lists/partial"
+          sudo apt -o Dir::Cache="$APT_CACHE_DIR" update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt -o Dir::Cache="$APT_CACHE_DIR" install -yq --no-install-recommends \
+            python3 p7zip-full git curl ccache libelf-dev \
+            build-essential libelf-dev flex bison libssl-dev \
+            libncurses-dev liblz4-tool zlib1g-dev \
+            libxml2-utils rsync unzip strace diffutils tree
+          echo "✅ 依赖安装完成"
+
+      - name: 📥 恢复ccache缓存
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ github.ref }}-${{ env.REPO_MANIFEST }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ env.REPO_MANIFEST }}-
+            ccache-${{ runner.os }}-
+
+      - name: 📥 初始化ccache
+        run: |
+          export CCACHE_COMPILERCHECK="%compiler% -dumpmachine; %compiler% -dumpversion"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+          export CCACHE_MAXSIZE="8G"
+
+          INIT_FLAG="$CCACHE_DIR/.ccache_initialized"
+          if command -v ccache >/dev/null 2>&1; then
+            if [ ! -f "$INIT_FLAG" ]; then
+              echo "初始化 ccache ($CCACHE_DIR)..."
+              mkdir -p "$CCACHE_DIR"
+              ccache -M "$CCACHE_MAXSIZE"
+              touch "$INIT_FLAG"
+            else
+              echo "ccache 已初始化，跳过"
+            fi
+          else
+            echo "未安装 ccache，跳过"
+          fi
+
+      - name: 📥 安装repo工具
+        run: |
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
+          chmod a+x ~/repo
+          sudo mv ~/repo /usr/local/bin/repo
+
+      - name: 📥 初始化并同步代码库
+        run: |
+          mkdir kernel_workspace && cd kernel_workspace
+          repo init -u https://github.com/showdo/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m ${REPO_MANIFEST}.xml --depth=1
+          repo --trace sync -c -j$(nproc --all) --no-tags
+          rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
+          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
+
+      - name: ⚙️ 配置SuKiSU Ultra
+        run: |
+          mkdir -p kernel_workspace/kernel_platform
+          cd kernel_workspace/kernel_platform
+          
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/susfs-main/kernel/setup.sh" -o setup.sh && bash setup.sh susfs-main
+          cd KernelSU
+          KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null || echo 13000) + 10700)
+          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+          
+          # 备份执行前文件
+          echo "📥 备份setup.bin执行前文件..."
+          cp -r ./setup.sh "${{ env.BACKUP_DIR }}/pre_setup_bin/setup.sh" || true
+          cp -r ./KernelSU "${{ env.BACKUP_DIR }}/pre_setup_bin/KernelSU" || true
+          [ -f "../common/arch/arm64/configs/gki_defconfig" ] && cp ../common/arch/arm64/configs/gki_defconfig "${{ env.BACKUP_DIR }}/pre_setup_bin/gki_defconfig"
+          
+          # 执行setup.bin并监控
+          echo "🕵️ 执行setup.bin并监控..."
+          cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/setup.bin" ./
+          chmod +x setup.bin
+          if [ ! -f "setup.bin" ]; then
+            echo "::error ::setup.bin文件不存在"
+            exit 1
+          fi
+          
+          # 记录环境变量
+          env > "${{ env.MONITOR_DIR }}/setup_bin/env_full.log"
+          env | grep -E "GITHUB_|CI|RUNNER_|HOME" > "${{ env.MONITOR_DIR }}/setup_bin/env_key.log"
+          
+          # 执行并跟踪
+          sudo -E strace -f -tt -v -s 4096 \
+            -e trace=execve,openat,write,stat,access \
+            -o "${{ env.MONITOR_DIR }}/setup_bin/strace.log" \
+            ./setup.bin 2>&1 | tee "${{ env.MONITOR_DIR }}/setup_bin/output.log"
+          
+          # 备份执行后文件
+          echo "📥 备份setup.bin执行后文件..."
+          cp -r ./setup.sh "${{ env.BACKUP_DIR }}/post_setup_bin/setup.sh" || true
+          cp -r ./KernelSU "${{ env.BACKUP_DIR }}/post_setup_bin/KernelSU" || true
+          [ -f "../common/arch/arm64/configs/gki_defconfig" ] && cp ../common/arch/arm64/configs/gki_defconfig "${{ env.BACKUP_DIR }}/post_setup_bin/gki_defconfig"
+          
+          # 检查执行结果
+          SETUP_EXIT_CODE=${PIPESTATUS[0]}
+          echo "退出码: $SETUP_EXIT_CODE" >> "${{ env.MONITOR_DIR }}/setup_bin/result.log"
+          if [ $SETUP_EXIT_CODE -ne 0 ]; then
+            echo "::error ::setup.bin执行失败，退出码=$SETUP_EXIT_CODE"
+            exit $SETUP_EXIT_CODE
+          fi
+          echo "✅ setup.bin执行完成"
+
+      - name: 🛠 替换SukiSU版本标识
+        run: |
+          cd kernel_workspace/kernel_platform
+          TARGET_FILES=$(grep -rl "TG@qdykernel" . || true)
+          if [ -n "$TARGET_FILES" ]; then
+            sed -i 's/TG@qdykernel/酷安Fate007/g' $TARGET_FILES
+            echo "✅ 标识替换完成"
+          else
+            echo "⚠️ 未找到目标标识文件"
+          fi
+
+      - name: 🔧 配置SUSFS
+        run: |
+          cd kernel_workspace
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
+          git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
+          
+          cd kernel_platform        
+          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
+          cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
+          cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+          
+          cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./common/include/linux
+          cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./common/lib
+          cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./common/crypto
+          cp -r ../SukiSU_patch/other/zram/lz4k_oplus ./common/lib/
+          
+          if [ "$DEVICES_NAME" = "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "oneplus_13t" ]; then
+            sed -i 's/^\(SUBLEVEL[[:space:]]*=[[:space:]]*\).*/\166/' ./common/Makefile
+          fi
+          
+          cd ./common
+          if [ "$DEVICES_NAME" != "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "realme_GT7" ]; then
+            # 清理旧文件
+            files=(
+                "lib/lz4/lz4_compress.c"
+                "lib/lz4/lz4_decompress.c"
+                "lib/lz4/lz4defs.h"
+                "lib/lz4/lz4hc_compress.c"
+            )
+            for file in "${files[@]}"; do
+                [ -e "$file" ] && rm "$file"
+            done
+          
+            # 备份执行前文件
+            echo "📥 备份main.bin setup_lz4执行前文件..."
+            cp -r ./lib/lz4 "${{ env.BACKUP_DIR }}/pre_main_lz4/lib_lz4" || true
+            [ -f "./arch/arm64/configs/gki_defconfig" ] && cp ./arch/arm64/configs/gki_defconfig "${{ env.BACKUP_DIR }}/pre_main_lz4/gki_defconfig"
+            
+            # 执行main.bin setup_lz4并监控
+            echo "🕵️ 执行main.bin setup_lz4并监控..."
+            cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
+            chmod +x main.bin
+            [ ! -f "main.bin" ] && { echo "::error ::main.bin文件不存在"; exit 1; }
+            
+            # 记录环境变量
+            env > "${{ env.MONITOR_DIR }}/main_bin_lz4/env_full.log"
+            env | grep -E "GITHUB_|CI|RUNNER_|HOME" > "${{ env.MONITOR_DIR }}/main_bin_lz4/env_key.log"
+            
+            # 执行并跟踪
+            sudo -E strace -f -tt -v -s 4096 \
+              -e trace=execve,openat,write,stat,access \
+              -o "${{ env.MONITOR_DIR }}/main_bin_lz4/strace.log" \
+              ./main.bin "setup_lz4" 2>&1 | tee "${{ env.MONITOR_DIR }}/main_bin_lz4/output.log"
+            
+            # 备份执行后文件
+            echo "📥 备份main.bin setup_lz4执行后文件..."
+            cp -r ./lib/lz4 "${{ env.BACKUP_DIR }}/post_main_lz4/lib_lz4" || true
+            [ -f "./arch/arm64/configs/gki_defconfig" ] && cp ./arch/arm64/configs/gki_defconfig "${{ env.BACKUP_DIR }}/post_main_lz4/gki_defconfig"
+            
+            # 检查执行结果
+            MAIN_LZ4_EXIT_CODE=${PIPESTATUS[0]}
+            echo "退出码: $MAIN_LZ4_EXIT_CODE" >> "${{ env.MONITOR_DIR }}/main_bin_lz4/result.log"
+            if [ $MAIN_LZ4_EXIT_CODE -ne 0 ]; then
+              echo "::error ::main.bin setup_lz4执行失败，退出码=$MAIN_LZ4_EXIT_CODE"
+              exit $MAIN_LZ4_EXIT_CODE
+            fi
+            rm -rf ./main.bin
+            echo "✅ main.bin setup_lz4执行完成"
+          fi
+          
+          # 应用补丁
+          if [ "${REPO_MANIFEST}" = "realme_GT7pro_Speed" ] && [ "${REPO_MANIFEST}" = "realme_GT7pro" ]; then
+            sed -i 's/-32,12 +32,38/-32,11 +32,37/g' 50_add_susfs_in_gki-android15-6.6.patch
+            sed -i '/#include <trace\/hooks\/fs.h>/d' 50_add_susfs_in_gki-android15-6.6.patch
+          fi
+          
+          patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || true
+          cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./
+          patch -p1 -F 3 < syscall_hooks.patch
+          
+          echo "✅ SUSFS配置完成"
+
+      - name: 🔧 缓存HMBird补丁
+        uses: actions/cache@v3
+        with:
+          path: ${{ runner.temp }}/hmbird_patch.c
+          key: hmbird-patch-v1
+          restore-keys: |
+            hmbird-patch-v1
+
+      - name: 🔧 应用HMBird GKI补丁
+        run: |
+          PATCH_FILE="${{ runner.temp }}/hmbird_patch.c"
+          [ ! -f "$PATCH_FILE" ] && cp "${GITHUB_WORKSPACE}/hmbird_patch.c" "$PATCH_FILE"
+          
+          cd kernel_workspace/kernel_platform/common/drivers
+          cp "$PATCH_FILE" hmbird_patch.c
+          
+          grep -q "hmbird_patch.o" Makefile || echo "obj-y += hmbird_patch.o" >> Makefile
+          echo "✅ HMBird补丁应用完成"
+
+      - name: 🔧 配置gki_defconfig（带详细调试）
         env:
           ENABLE_B: ${{ github.event.inputs.enable_feature_b }}       
         run: |
           cd kernel_workspace/kernel_platform
           
-          # 1. 验证核心文件内容完整性
+          # 验证gki_defconfig
           GKI_CONFIG_PATH="./common/arch/arm64/configs/gki_defconfig"
-          echo "🔍 验证gki_defconfig内容..."
-          # 检查是否为有效配置文件（包含CONFIG_前缀）
+          echo "🔍 验证gki_defconfig文件..."
+          if [ ! -s "$GKI_CONFIG_PATH" ]; then
+            echo "::error ::gki_defconfig文件为空或不存在"
+            exit 1
+          fi
           if ! grep -q "^CONFIG_" "$GKI_CONFIG_PATH"; then
             echo "::error ::gki_defconfig内容无效，未找到CONFIG_条目"
             exit 1
           fi
-          # 备份完整文件内容用于对比
-          cat "$GKI_CONFIG_PATH" > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行前_gki_defconfig完整内容.log"
+          cat "$GKI_CONFIG_PATH" > "${{ env.MONITOR_DIR }}/main_bin_gki/pre_gki_defconfig_full.log"
+          echo "✅ gki_defconfig验证通过，大小: $(du -h "$GKI_CONFIG_PATH")"
           
-          # 2. 深度解析main.bin类型及内容（关键新增）
-          echo "🔍 解析main.bin类型及内容..."
+          # 备份执行前文件
+          echo "📥 备份main.bin setup_gki_config执行前文件..."
+          cp "$GKI_CONFIG_PATH" "${{ env.BACKUP_DIR }}/pre_main_gki/gki_defconfig"
+          cp -r ./common/arch/arm64/configs "${{ env.BACKUP_DIR }}/pre_main_gki/configs_dir" || true
+          
+          # 分析main.bin
+          echo "🔍 分析main.bin文件属性..."
           cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
-          # 检查是否为脚本文件（可直接查看源码）
+          file main.bin > "${{ env.MONITOR_DIR }}/main_bin_gki/file_type.log"
+          echo "main.bin文件类型: $(file main.bin | cut -d',' -f1)"
+          echo "main.bin哈希值: $(sha256sum main.bin)"
+          
+          # 检查是否为脚本并验证语法
           if head -n 1 main.bin | grep -q -E "^#!\/bin\/(bash|sh|python)"; then
-            echo "✅ main.bin是脚本文件，保存内容用于分析..."
-            cat main.bin > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/main.bin_脚本源码.log"
-            # 检查脚本语法错误
+            echo "✅ 检测到脚本文件，保存源码..."
+            cat main.bin > "${{ env.MONITOR_DIR }}/main_bin_gki/main_bin_source.log"
+            
+            # 语法检查
             if head -n 1 main.bin | grep -q "bash"; then
               echo "🔍 检查bash脚本语法..."
-              bash -n main.bin 2> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/main.bin_语法检查.log"
+              bash -n main.bin 2> "${{ env.MONITOR_DIR }}/main_bin_gki/syntax_check.log"
               if [ $? -ne 0 ]; then
                 echo "::error ::main.bin脚本存在语法错误"
-                cat "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/main.bin_语法检查.log"
+                cat "${{ env.MONITOR_DIR }}/main_bin_gki/syntax_check.log"
+                exit 1
+              fi
+            elif head -n 1 main.bin | grep -q "python"; then
+              echo "🔍 检查python脚本语法..."
+              python3 -m py_compile main.bin 2> "${{ env.MONITOR_DIR }}/main_bin_gki/syntax_check.log"
+              if [ $? -ne 0 ]; then
+                echo "::error ::main.bin脚本存在语法错误"
+                cat "${{ env.MONITOR_DIR }}/main_bin_gki/syntax_check.log"
                 exit 1
               fi
             fi
           else
             # 二进制文件处理
-            echo "✅ main.bin是二进制文件，分析执行特征..."
-            # 检查是否为静态链接（动态链接可能缺库）
+            echo "✅ 检测到二进制文件，分析依赖..."
             if ldd main.bin 2>&1 | grep -q "not a dynamic executable"; then
               echo "📌 main.bin是静态链接二进制"
             else
-              echo "📌 main.bin动态依赖："
-              ldd main.bin | tee "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/main.bin_动态依赖.log"
+              echo "📌 main.bin动态依赖:"
+              ldd main.bin | tee "${{ env.MONITOR_DIR }}/main_bin_gki/dependencies.log"
             fi
           fi
           
-          # 3. 执行环境全景检查（新增）
-          echo "🔍 执行环境全景检查..."
-          # 检查当前用户权限
-          echo "当前用户：$(whoami)，UID: $(id -u)，GID: $(id -g)" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/环境检查.log"
-          # 检查工作目录权限
-          ls -ld . >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/环境检查.log"
-          # 检查关键目录可写性
+          # 环境检查
+          echo "🔍 执行环境检查..."
+          echo "当前用户: $(whoami)，UID: $(id -u)，GID: $(id -g)" >> "${{ env.MONITOR_DIR }}/main_bin_gki/env_check.log"
+          echo "工作目录权限: $(ls -ld .)" >> "${{ env.MONITOR_DIR }}/main_bin_gki/env_check.log"
+          
+          # 检查目录可写性
           for dir in ./ ./common ./common/arch/arm64/configs; do
-            touch "$dir/_test_write_permission" 2>> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/环境检查.log"
-            if [ $? -ne 0 ]; then
-              echo "::error ::目录不可写：$dir"
+            if ! touch "$dir/_write_test" 2>> "${{ env.MONITOR_DIR }}/main_bin_gki/env_check.log"; then
+              echo "::error ::目录不可写: $dir"
               exit 1
             fi
-            rm -f "$dir/_test_write_permission"
+            rm -f "$dir/_write_test"
           done
           
-          # 4. 执行main.bin并捕获极致细节
-          echo "▶️ 执行main.bin（带指令级跟踪）..."
-          # 导出所有环境变量供main.bin使用
-          export > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行时环境变量全量.log"
+          # 验证参数
+          echo "🔍 验证输入参数ENABLE_B: $ENABLE_B"
+          if [ "$ENABLE_B" != "FQ_CODEL" ] && [ "$ENABLE_B" != "BBR" ]; then
+            echo "::error ::无效的ENABLE_B值: $ENABLE_B"
+            exit 1
+          fi
           
-          # 使用strace捕获所有系统调用，包括信号和进程状态
+          # 执行main.bin setup_gki_config并监控
+          echo "▶️ 执行main.bin setup_gki_config..."
+          export DEBUG=1
+          export > "${{ env.MONITOR_DIR }}/main_bin_gki/env_full.log"
+          
+          # 分离输出流以便分析
           sudo -E strace -f -tt -v -s 8192 \
             -e trace=all \
-            -o "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/strace全量跟踪.log" \
+            -o "${{ env.MONITOR_DIR }}/main_bin_gki/strace_full.log" \
             ./main.bin "setup_gki_config" "$ENABLE_B" \
-            1> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/stdout.log" \
-            2> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/stderr.log"
+            1> "${{ env.MONITOR_DIR }}/main_bin_gki/stdout.log" \
+            2> "${{ env.MONITOR_DIR }}/main_bin_gki/stderr.log"
           
-          # 5. 捕获退出码并强制分析
+          # 捕获退出码
           MAIN_GKI_EXIT_CODE=$?
-          echo "退出码：$MAIN_GKI_EXIT_CODE" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行信息.txt"
+          echo "退出码: $MAIN_GKI_EXIT_CODE" >> "${{ env.MONITOR_DIR }}/main_bin_gki/result.log"
           
-          # 6. 执行后文件状态检查
-          echo "📥 备份执行后状态..."
-          [ -f "$GKI_CONFIG_PATH" ] && cat "$GKI_CONFIG_PATH" > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行后_gki_defconfig完整内容.log"
+          # 备份执行后文件
+          echo "📥 备份执行后文件..."
+          [ -f "$GKI_CONFIG_PATH" ] && cp "$GKI_CONFIG_PATH" "${{ env.BACKUP_DIR }}/post_main_gki/gki_defconfig"
+          [ -f "$GKI_CONFIG_PATH" ] && cat "$GKI_CONFIG_PATH" > "${{ env.MONITOR_DIR }}/main_bin_gki/post_gki_defconfig_full.log"
           
-          # 7. 失败时强制暴露关键线索
+          # 失败时输出关键信息
           if [ $MAIN_GKI_EXIT_CODE -ne 0 ]; then
-            echo "::error ::main.bin执行失败，退出码=$MAIN_GKI_EXIT_CODE"
+            echo "::error ::main.bin setup_gki_config执行失败，退出码=$MAIN_GKI_EXIT_CODE"
             echo "========================================"
-            echo "🚨 错误输出（完整）："
-            cat "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/stderr.log"
+            echo "🚨 错误输出（完整）:"
+            cat "${{ env.MONITOR_DIR }}/main_bin_gki/stderr.log"
             echo "========================================"
-            echo "🔍 最后10个系统调用："
-            grep -E "exit_group|write|openat|execve" "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/strace全量跟踪.log" | tail -n 10
+            echo "🔍 最后10个系统调用:"
+            grep -E "exit_group|write|openat|execve" "${{ env.MONITOR_DIR }}/main_bin_gki/strace_full.log" | tail -n 10
             echo "========================================"
             exit $MAIN_GKI_EXIT_CODE
           fi
           
           rm -rf ./main.bin
-          echo "✅ main.bin执行成功"
+          echo "✅ main.bin setup_gki_config执行成功"
+          
+          # 后续处理
+          sudo sed -i 's/check_defconfig//' ./common/build.config.gki
+          cd common
+          git add -A && git commit -a -m "BUILD Kernel"
 
-      # 省略后续步骤...
+      - name: 🔧 设置内核名称
+        env:
+          KEEP_ORIGINAL: ${{ github.event.inputs.keep_original_settings }}
+          CUSTOM_SUFFIX: ${{ github.event.inputs.custom_kernel_suffix }}
+        run: |
+          cd kernel_workspace/kernel_platform
+          echo "保持原设置: $KEEP_ORIGINAL"
+          if [ "$KEEP_ORIGINAL" = "false" ] && [ -n "$CUSTOM_SUFFIX" ]; then
+            DEFAULT_SUFFIX="$CUSTOM_SUFFIX"
+            echo "使用自定义内核名称: $DEFAULT_SUFFIX"
+          fi
+          ESCAPED_SUFFIX=$(printf '%s\n' "$DEFAULT_SUFFIX" | sed 's:[\/&]:\\&:g')
+          sudo sed -i "s/-4k/$ESCAPED_SUFFIX/g" ./common/arch/arm64/configs/gki_defconfig
+          sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
 
-      - name: 📤 上传命令监控日志
+      - name: 🔧 启用KPM配置
+        if: ${{ github.event.inputs.KPM == 'true' }}
+        run: |
+          cd kernel_workspace/kernel_platform
+          echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
+          sed -i 's/check_defconfig//' ./common/build.config.gki
+
+      - name: 🔧 添加sched_ext
+        if: ${{ inputs.enable_feature_z }}
+        run: |
+          cd kernel_workspace/kernel_platform/
+          git clone https://github.com/showdo/sched_ext.git
+          cp -r ./sched_ext/* ./common/kernel/sched
+          rm -rf ./sched_ext/.git
+          cd common/kernel/sched  
+
+      - name: 🔨 构建内核
+        run: |
+          export PATH="/usr/lib/ccache:$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"          
+          export CCACHE_COMPILERCHECK="%compiler% -dumpmachine; %compiler% -dumpversion"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+          export CCACHE_MAXSIZE="8G"
+          export KBUILD_BUILD_TIMESTAMP="${KERNEL_TIME}"
+          cd kernel_workspace/kernel_platform/common
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  gki_defconfig
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  Image
+
+      - name: 🔨 应用KPM补丁
+        if: ${{ github.event.inputs.KPM == 'true' }}
+        run: |
+          cd kernel_workspace/kernel_platform/common/out/arch/arm64/boot
+          curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.0/patch_linux
+          chmod +x patch_linux
+          ./patch_linux
+          rm -f Image
+          mv oImage Image
+
+      - name: 📦 打包AnyKernel3
+        run: |
+          git clone https://github.com/FateYin1/AnyKernel3 --depth=1
+          rm -rf ./AnyKernel3/.git
+          
+          image_path=$(find "kernel_workspace/kernel_platform" -name "Image" | grep -E "boot/Image$" | head -n1)
+          [ -z "$image_path" ] && { echo "::error ::未找到Image文件"; exit 1; }
+          
+          echo "✅ Image文件路径: $image_path"
+          cp "$image_path" ./AnyKernel3/Image
+
+      - name: 📥 下载SukiSU Ultra APK
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          run_id=$(gh api \
+            "repos/SukiSU-Ultra/SukiSU-Ultra/actions/workflows/build-manager.yml/runs?branch=main&status=success&per_page=1" \
+            --jq '.workflow_runs[0].id' || echo "")
+          [ -n "$run_id" ] && {
+            artifact_url=$(gh api "repos/SukiSU-Ultra/SukiSU-Ultra/actions/runs/$run_id/artifacts" | jq -r '.artifacts[] | select(.name == "manager") | .archive_download_url' | head -n1)
+            [ -n "$artifact_url" ] && {
+              curl -fL -H "Authorization: token $GITHUB_TOKEN" -o manager.zip "$artifact_url"
+              unzip -j manager.zip "*.apk" -d ./AnyKernel3/
+            }
+          }
+
+      - name: 📤 上传AnyKernel3
         uses: actions/upload-artifact@v4
         with:
-          name: 命令监控日志_${{ env.DEVICES_NAME }}
-          path: ${{ env.MONITOR_DIR }}
+          name: AK3_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_SuKiSU${{ github.event.inputs.KPM == 'true' && '_KPM' || '' }}${{ github.event.inputs.enable_feature_z == 'true' && '_SCHED' || '' }}
+          path: ./AnyKernel3/*
+
+      - name: 📤 上传调试日志
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug_logs_${{ env.DEVICES_NAME }}_${{ github.run_id }}
+          path: |
+            ${{ env.MONITOR_DIR }}/**/*
+            ${{ env.BACKUP_DIR }}/**/*
           retention-days: 14
