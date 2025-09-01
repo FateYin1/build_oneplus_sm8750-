@@ -1,9 +1,9 @@
-name: Build_oneplus_sm8750 (简化备份对比版)
+name: Build_oneplus_sm8777
 on:
   workflow_dispatch:
     inputs:
       REPO_MANIFEST:
-        description: "📝选择机型"
+        description: "📝请选择要编译的机型："
         required: true
         type: choice
         options:
@@ -16,59 +16,74 @@ on:
           - 'realme_GT7pro'
           - 'realme_GT7pro_Speed'
         default: 'oneplus_13'
+
       keep_original_settings:
-        description: "保持原内核名称/时间"
+        description: "📝保持原内核名称及构建时间(不懂请保持默认)"
         required: false
         default: true
         type: boolean
+
       custom_kernel_suffix:
-        description: "自定义内核名称（取消原设置时生效）"
+        description: "✏️ 自定义内核名称- 仅在取消勾选'保持原设置'时有效(不懂请保持默认)"
         required: false
         default: ''
+      
       custom_kernel_time:
-        description: "自定义构建时间（取消原设置时生效）"
+        description: "⏰ 自定义构建时间- 仅在取消勾选'保持原设置'时有效(不懂请保持默认)"
         required: false
         default: ''
+
       enable_feature_z:
         description: "添加风驰驱动"
         required: false
         default: true
         type: boolean
+
       enable_feature_b:
-        description: "选择网络调度"
-        required: false
-        type: choice
-        options: [ 'FQ_CODEL', 'BBR' ]
-        default: 'FQ_CODEL'
+         description: "选择网络调度"
+         required: false
+         type: choice
+         options:
+            - 'FQ_CODEL'
+            - 'BBR'
+         default: 'FQ_CODEL'
+      
       KPM:
         type: boolean
-        description: "启用内核模块(KPM)"
+        description: "是否启用内核模块(KPM)？"
         required: true
         default: true
 
+
 jobs:
-  build_with_simple_backup:
-    name: Build_${{ github.event.inputs.REPO_MANIFEST }}_Backup
+  build:
+    name: Build_${{ github.event.inputs.REPO_MANIFEST }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 初始化备份目录（仅存备份和差异，无多余文件）
-      - name: 📁 初始化备份目录
+      # 新增：初始化备份目录（仅存关键文件备份和差异日志）
+      - name: 📁 初始化黑盒追踪备份目录
         run: |
-          BACKUP_DIR="${GITHUB_WORKSPACE}/关键文件备份_${{ github.event.inputs.REPO_MANIFEST }}"
-          mkdir -p "$BACKUP_DIR/lz4_源码同步后"       # 节点1：同步源码后备份lz4
-          mkdir -p "$BACKUP_DIR/config_配置前"        # 节点2：设置配置前备份配置
-          mkdir -p "$BACKUP_DIR/config_编译前"        # 节点3：编译前备份配置
-          mkdir -p "$BACKUP_DIR/差异对比结果"         # 存放所有diff日志
-          echo "BACKUP_DIR=$BACKUP_DIR" >> $GITHUB_ENV
+          TRACE_DIR="${GITHUB_WORKSPACE}/黑盒追踪_${{ github.event.inputs.REPO_MANIFEST }}"
+          # 备份目录：覆盖3个黑盒影响的关键文件
+          mkdir -p "$TRACE_DIR/lz4/源码同步后"       # lz4原始状态（黑盒修改前）
+          mkdir -p "$TRACE_DIR/lz4/main_bin后"        # lz4被main.bin修改后状态
+          mkdir -p "$TRACE_DIR/config/setup_gki前"    # 配置文件原始状态（黑盒修改前）
+          mkdir -p "$TRACE_DIR/config/setup_gki后"    # 配置文件被main.bin修改后状态
+          mkdir -p "$TRACE_DIR/差异日志"              # 自动生成的对比结果
+          echo "TRACE_DIR=$TRACE_DIR" >> $GITHUB_ENV
+          echo "✅ 黑盒追踪目录初始化完成：$TRACE_DIR"
 
-      # 原逻辑：设置机型/环境变量（保留）
-      - name: ⚙️ 设置基础环境
+      - name: 📊 Check disk space (检查磁盘空间)
         run: |
-          # 机型配置
+          echo "构建前磁盘空间："
+          df -h
+      
+      - name: ⚙️ Set REPO_MANIFEST (设置对应机型配置文件)
+        run: |
           case "${{ github.event.inputs.REPO_MANIFEST }}" in
             oneplus_ace5_pro)
               echo "REPO_MANIFEST=JiuGeFaCai_oneplus_ace5_pro_v" >> $GITHUB_ENV
@@ -83,201 +98,451 @@ jobs:
               echo "DEVICES_NAME=${{ github.event.inputs.REPO_MANIFEST }}" >> $GITHUB_ENV
               ;;
           esac
-          # 内核后缀/时间配置（原逻辑保留）
           case "${{ github.event.inputs.REPO_MANIFEST }}" in
             oneplus_13 | oneplus_ace5_pro)
               echo 'DEFAULT_SUFFIX=-android15-8-g4dc61d72e02f-abogki415959920-4k' >> $GITHUB_ENV
-              [ "${{ github.event.inputs.keep_original_settings }}" = "true" ] && echo 'KERNEL_TIME=Mon May 12 09:09:59 UTC 2025' >> $GITHUB_ENV
               ;;
             realme_GT7pro_Speed)
               echo 'DEFAULT_SUFFIX=-android15-8-g013ec21bba94-abogki383916444-4k' >> $GITHUB_ENV
-              [ "${{ github.event.inputs.keep_original_settings }}" = "true" ] && echo 'KERNEL_TIME=Tue Dec 17 23:36:49 UTC 2024' >> $GITHUB_ENV
               ;;
             realme_GT7)
               echo 'DEFAULT_SUFFIX=-android15-8-g06c41a4a6e98-abogki395793266-4k' >> $GITHUB_ENV
-              [ "${{ github.event.inputs.keep_original_settings }}" = "true" ] && echo 'KERNEL_TIME=Mon Jan 20 03:24:58 UTC 2025' >> $GITHUB_ENV
               ;;
             realme_GT7pro)
               echo 'DEFAULT_SUFFIX=-android15-8-gc6f5283046c6-ab12364222-4k' >> $GITHUB_ENV
-              [ "${{ github.event.inputs.keep_original_settings }}" = "true" ] && echo 'KERNEL_TIME=Fri Sep 13 02:08:57 UTC 2024' >> $GITHUB_ENV
               ;;
             oneplus_13t)
               echo 'DEFAULT_SUFFIX=-android15-8-gd43086512890-abogki423825152-4k' >> $GITHUB_ENV
-              [ "${{ github.event.inputs.keep_original_settings }}" = "true" ] && echo 'KERNEL_TIME=Tue Jun 10 12:12:23 UTC 2025' >> $GITHUB_ENV
               ;;
             oneplus_pad_2_pro)
               echo 'DEFAULT_SUFFIX=-android15-8-g7b1f455c7143-ab13591283-4k' >> $GITHUB_ENV
-              [ "${{ github.event.inputs.keep_original_settings }}" = "true" ] && echo 'KERNEL_TIME=Tue Jun  3 03:22:33 UTC 2025' >> $GITHUB_ENV
               ;;
             oneplus_ace5_ultra)
               echo 'DEFAULT_SUFFIX=-android15-8-g29d86c5fc9dd-abogki428889875-4k' >> $GITHUB_ENV
-              [ "${{ github.event.inputs.keep_original_settings }}" = "true" ] && echo 'KERNEL_TIME=Tue Jul  1 19:48:18 UTC 2025' >> $GITHUB_ENV
               ;;
           esac
-          # 自定义配置（原逻辑保留）
           if [ "${{ github.event.inputs.keep_original_settings }}" = "false" ] && [ -n "${{ github.event.inputs.custom_kernel_suffix }}" ]; then
             CUSTOM_TIME="${{ github.event.inputs.custom_kernel_time }}"
             [ -z "$CUSTOM_TIME" ] && CUSTOM_TIME="$(date -u +"%a %b %d %H:%M:%S UTC %Y")"
+            echo "使用自定义构建时间: $CUSTOM_TIME"
             echo "KERNEL_TIME=$CUSTOM_TIME" >> $GITHUB_ENV
-            echo "DEFAULT_SUFFIX=${{ github.event.inputs.custom_kernel_suffix }}" >> $GITHUB_ENV
+          else
+            case "${{ github.event.inputs.REPO_MANIFEST }}" in
+              oneplus_13 | oneplus_ace5_pro)
+                echo 'KERNEL_TIME=Mon May 12 09:09:59 UTC 2025' >> $GITHUB_ENV
+                ;;
+              realme_GT7pro_Speed)
+                echo 'KERNEL_TIME=Tue Dec 17 23:36:49 UTC 2024' >> $GITHUB_ENV
+                ;;
+              realme_GT7)
+                echo 'KERNEL_TIME=Mon Jan 20 03:24:58 UTC 2025' >> $GITHUB_ENV
+                ;;
+              realme_GT7pro)
+                echo 'KERNEL_TIME=Fri Sep 13 02:08:57 UTC 2024' >> $GITHUB_ENV
+                ;;
+              oneplus_13t)
+                echo 'KERNEL_TIME=Tue Jun 10 12:12:23 UTC 2025' >> $GITHUB_ENV
+                ;;
+              oneplus_pad_2_pro)
+                echo 'KERNEL_TIME=Tue Jun  3 03:22:33 UTC 2025' >> $GITHUB_ENV
+                ;;
+              oneplus_ace5_ultra)
+                echo 'KERNEL_TIME=Tue Jul  1 19:48:18 UTC 2025' >> $GITHUB_ENV
+                ;;
+            esac
           fi
+          
+      - name: ⚙️ Set device-specific CCACHE_DIR (设置对应机型Cceche路径)
+        run: |
           echo "CCACHE_DIR=$HOME/.ccache_${REPO_MANIFEST}" >> $GITHUB_ENV
 
-      # 原逻辑：依赖安装/ccache/repo初始化（保留）
-      - name: 📦 基础依赖准备
+      - name: 📦 Configure Git (设置下载账户)
         run: |
-          # 依赖安装
-          sudo apt update -qq && sudo apt install -yq python3 git curl ccache libelf-dev build-essential flex bison libssl-dev libncurses-dev liblz4-tool zlib1g-dev rsync unzip diffutils
-          # ccache初始化
-          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
-          ccache -M 8G 2>/dev/null || true
-          # repo安装
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/repo && chmod +x ~/repo && sudo mv ~/repo /usr/local/bin/repo
+          git config --global user.name "FateYin1"
+          git config --global user.email "1244243922@qq.com"
 
-      # 节点1：同步源码后 → 备份lz4目录（原始状态）
-      - name: 📥 同步源码 + 备份lz4原始目录
+      - name: 🛠 Configure APT caching (配置APT缓存)
         run: |
-          mkdir kernel_workspace && cd kernel_workspace
-          repo init -u https://github.com/showdo/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m ${REPO_MANIFEST}.xml --depth=1
-          repo sync -c -j$(nproc --all) --no-tags
-          # 备份源码原始lz4目录（关键节点1）
-          LZ4_SRC_PATH="./kernel_platform/common/lib/lz4"
-          [ -d "$LZ4_SRC_PATH" ] && cp -r "$LZ4_SRC_PATH" "${{ env.BACKUP_DIR }}/lz4_源码同步后/"
-          # 原逻辑：删除保护文件
-          rm kernel_platform/common/android/abi_gki_protected_exports_* 2>/dev/null || true
-          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* 2>/dev/null || true
+          APT_CACHE_DIR="$HOME/apt-cache"
+          mkdir -p "$APT_CACHE_DIR"/{archives,lists/partial}
+          echo "Dir::Cache \"$APT_CACHE_DIR\";" | sudo tee /etc/apt/apt.conf.d/90user-cache
+          echo "Dir::Cache::archives \"$APT_CACHE_DIR/archives\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
+          echo "Dir::State::lists \"$APT_CACHE_DIR/lists\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
+          echo "Acquire::Check-Valid-Until \"false\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
+          echo "Acquire::Languages \"none\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
+          sudo chown -R $USER:$USER "$APT_CACHE_DIR"
 
-      # 原逻辑：SuKiSU/SUSFS/HMBird配置（保留，不修改）
-      - name: ⚙️ 基础功能配置（SuKiSU/SUSFS/HMBird）
-        run: |
-          cd kernel_workspace/kernel_platform
-          # SuKiSU配置
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/susfs-main/kernel/setup.sh" -o setup.sh && bash setup.sh susfs-main
-          cd KernelSU && KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null || echo 13000) + 10700) && echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV && cd ..
-          cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/setup.bin" ./ && chmod +x setup.bin && ./setup.bin 2>/dev/null && rm setup.bin
-          # 替换标识
-          TARGET_FILES=$(grep -rl "TG@qdykernel" . 2>/dev/null || true) && [ -n "$TARGET_FILES" ] && sed -i 's/TG@qdykernel/酷安Fate007/g' $TARGET_FILES
-          # SUSFS配置
-          cd .. && git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 && git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
-          cd kernel_platform && cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
-          cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/ && cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-          cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./common/include/linux && cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./common/lib
-          cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./common/crypto && cp -r ../SukiSU_patch/other/zram/lz4k_oplus ./common/lib/
-          # 机型特殊处理
-          if [ "$DEVICES_NAME" = "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "oneplus_13t" ]; then
-            sed -i 's/^\(SUBLEVEL[[:space:]]*=[[:space:]]*\).*/\166/' ./common/Makefile
-          fi
-          # 应用补丁
-          cd ./common && if [ "$DEVICES_NAME" != "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "realme_GT7" ]; then
-            files=("lib/lz4/lz4_compress.c" "lib/lz4/lz4_decompress.c" "lib/lz4/lz4defs.h" "lib/lz4/lz4hc_compress.c")
-            for file in "${files[@]}"; do [ -e "$file" ] && rm "$file"; done
-            # 执行lz4相关黑盒（保留原逻辑）
-            cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./ && chmod +x main.bin && ./main.bin "setup_lz4" 2>/dev/null && rm main.bin
-          fi
-          # SUSFS补丁修正
-          if [ "${REPO_MANIFEST}" = "realme_GT7pro_Speed" ] || [ "${REPO_MANIFEST}" = "realme_GT7pro" ]; then
-            sed -i 's/-32,12 +32,38/-32,11 +32,37/g' 50_add_susfs_in_gki-android15-6.6.patch && sed -i '/#include <trace\/hooks\/fs.h>/d' 50_add_susfs_in_gki-android15-6.6.patch
-          fi
-          patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch 2>/dev/null && cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./ && patch -p1 -F 3 < syscall_hooks.patch 2>/dev/null
-          # HMBird配置
-          PATCH_FILE="${{ runner.temp }}/hmbird_patch.c" && [ ! -f "$PATCH_FILE" ] && cp "${GITHUB_WORKSPACE}/hmbird_patch.c" "$PATCH_FILE"
-          cd drivers && cp "$PATCH_FILE" hmbird_patch.c && grep -q "hmbird_patch.o" Makefile || echo "obj-y += hmbird_patch.o" >> Makefile
+      - name: 🛠 Cache APT packages (缓存APT包)
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.HOME }}/apt-cache
+          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/Build_oneplus_sm8750.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
 
-      # 节点2：设置编译配置前 → 备份配置文件（黑盒修改前状态）
-      - name: 📝 设置配置前 → 备份原始配置
+      - name: 📦 Install dependencies (安装依赖)
         run: |
-          cd kernel_workspace/kernel_platform
-          # 备份配置目录（关键节点2）
-          CONFIG_PATH="./common/arch/arm64/configs"
-          [ -d "$CONFIG_PATH" ] && cp -r "$CONFIG_PATH" "${{ env.BACKUP_DIR }}/config_配置前/"
-          # 执行配置黑盒（原逻辑保留）
-          cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./ && chmod +x main.bin && ./main.bin "setup_gki_config" "${{ github.event.inputs.enable_feature_b }}" 2>/dev/null && rm main.bin
-          # 原逻辑：修改build.config.gki
-          sed -i 's/check_defconfig//' ./common/build.config.gki && cd common && git add -A && git commit -a -m "BUILD Kernel" 2>/dev/null
-
-      # 节点3：编译内核前 → 备份最终配置（黑盒修改后状态）
-      - name: 📝 编译前 → 备份最终配置 + 对比差异
-        run: |
-          cd kernel_workspace/kernel_platform
-          # 备份编译前配置（关键节点3）
-          CONFIG_PATH="./common/arch/arm64/configs"
-          [ -d "$CONFIG_PATH" ] && cp -r "$CONFIG_PATH" "${{ env.BACKUP_DIR }}/config_编译前/"
-          # 备份当前lz4目录（对比源码后是否被修改）
-          LZ4_CURRENT_PATH="./common/lib/lz4"
-          [ -d "$LZ4_CURRENT_PATH" ] && cp -r "$LZ4_CURRENT_PATH" "${{ env.BACKUP_DIR }}/lz4_编译前/"
+          sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock
+          APT_CACHE_DIR="$HOME/apt-cache"
+          mkdir -p "$APT_CACHE_DIR/lists/partial"
+          sudo apt -o Dir::Cache="$APT_CACHE_DIR" update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt -o Dir::Cache="$APT_CACHE_DIR" install -yq --no-install-recommends \
+            python3 p7zip-full git curl ccache libelf-dev \
+            build-essential libelf-dev flex bison libssl-dev \
+            libncurses-dev liblz4-tool zlib1g-dev \
+            libxml2-utils rsync unzip \
+            diffutils  # 新增：仅用于生成差异日志的工具
           
-          # 生成差异对比结果（核心）
-          DIFF_DIR="${{ env.BACKUP_DIR }}/差异对比结果"
-          # 1. lz4：源码同步后 vs 编译前（看黑盒是否修改lz4）
-          if [ -d "${{ env.BACKUP_DIR }}/lz4_源码同步后/lz4" ] && [ -d "${{ env.BACKUP_DIR }}/lz4_编译前/lz4" ]; then
-            diff -urN "${{ env.BACKUP_DIR }}/lz4_源码同步后/lz4" "${{ env.BACKUP_DIR }}/lz4_编译前/lz4" > "$DIFF_DIR/lz4_源码vs编译前.diff" 2>/dev/null
-            [ -s "$DIFF_DIR/lz4_源码vs编译前.diff" ] || echo "lz4目录无修改" > "$DIFF_DIR/lz4_源码vs编译前.diff"
+          echo "✅ 依赖安装完成"
+          
+      - name: 📥 Restore ccache (载入 机型：${{ env.DEVICES_NAME }}的 ccache 缓存)
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ github.ref }}-${{ env.REPO_MANIFEST }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ env.REPO_MANIFEST }}-
+            ccache-${{ runner.os }}-
+
+      - name: 📥 Init ccache (如果是第一次运行则初始化Cceche)
+        run: |
+          export CCACHE_COMPILERCHECK="%compiler% -dumpmachine; %compiler% -dumpversion"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+          export CCACHE_MAXSIZE="8G"
+
+          INIT_FLAG="$CCACHE_DIR/.ccache_initialized"
+          if command -v ccache >/dev/null 2>&1; then
+            if [ ! -f "$INIT_FLAG" ]; then
+              echo "初始化 ccache ($CCACHE_DIR)..."
+              mkdir -p "$CCACHE_DIR"
+              ccache -M "$CCACHE_MAXSIZE"
+              touch "$INIT_FLAG"
+            else
+              echo "ccache 已初始化，跳过"
+            fi
           else
-            echo "lz4目录缺失，无法对比" > "$DIFF_DIR/lz4_源码vs编译前.diff"
-          fi
-          # 2. 配置：设置前 vs 编译前（看黑盒是否修改配置）
-          if [ -d "${{ env.BACKUP_DIR }}/config_配置前/configs" ] && [ -d "${{ env.BACKUP_DIR }}/config_编译前/configs" ]; then
-            diff -urN "${{ env.BACKUP_DIR }}/config_配置前/configs" "${{ env.BACKUP_DIR }}/config_编译前/configs" > "$DIFF_DIR/config_配置前vs编译前.diff" 2>/dev/null
-            # 单独对比gki_defconfig（关键配置文件）
-            diff -u "${{ env.BACKUP_DIR }}/config_配置前/configs/gki_defconfig" "${{ env.BACKUP_DIR }}/config_编译前/configs/gki_defconfig" > "$DIFF_DIR/gki_defconfig_单独对比.diff" 2>/dev/null
-            [ -s "$DIFF_DIR/config_配置前vs编译前.diff" ] || echo "配置目录无修改" > "$DIFF_DIR/config_配置前vs编译前.diff"
-            [ -s "$DIFF_DIR/gki_defconfig_单独对比.diff" ] || echo "gki_defconfig无修改" > "$DIFF_DIR/gki_defconfig_单独对比.diff"
-          else
-            echo "配置目录缺失，无法对比" > "$DIFF_DIR/config_配置前vs编译前.diff"
-            echo "gki_defconfig缺失，无法对比" > "$DIFF_DIR/gki_defconfig_单独对比.diff"
+            echo "未安装 ccache，跳过"
           fi
 
-      # 原逻辑：内核命名/KPM/sched_ext/编译/打包（保留）
-      - name: 🔨 内核编译与打包
+      - name: 📥 Install repo tool (下载repo工具)
+        run: |
+         curl https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
+         chmod a+x ~/repo
+         sudo mv ~/repo /usr/local/bin/repo
+
+      # 新增：节点1 - 源码同步后，备份lz4原始状态（未被黑盒修改）
+      - name: 📥 Initialize repo and sync (初始化repo并同步内核源码)
+        run: |
+         mkdir kernel_workspace && cd kernel_workspace
+         repo init -u https://github.com/showdo/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m ${REPO_MANIFEST}.xml --depth=1
+         repo --trace sync -c -j$(nproc --all) --no-tags
+         rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
+         rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
+         
+         # 备份lz4原始目录（main.bin修改前）
+         LZ4_RAW_PATH="./kernel_platform/common/lib/lz4"
+         if [ -d "$LZ4_RAW_PATH" ]; then
+           cp -r "$LZ4_RAW_PATH" "${{ env.TRACE_DIR }}/lz4/源码同步后/"
+           echo "✅ 已备份lz4原始状态：${{ env.TRACE_DIR }}/lz4/源码同步后/"
+         else
+           echo "⚠️ lz4原始目录不存在，跳过备份"
+         fi
+         
+      - name: ⚙️ Set SuKiSU Ultra (设置SuKiSU Ultra)
+        run: |
+            mkdir -p kernel_workspace/kernel_platform
+            cd kernel_workspace/kernel_platform
+            
+            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/susfs-main/kernel/setup.sh" -o setup.sh && bash setup.sh susfs-main
+            cd KernelSU
+            KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null || echo 13000) + 10700)
+            echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+             cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/setup.bin" ./
+            chmod +x setup.bin
+            if [ ! -f "kernel/Makefile" ]; then
+              echo "::error ::kernel/Makefile"
+              ls -la
+              exit 1
+            fi
+            ./setup.bin
+
+      - name: 🛠 替换SukiSU版本标识
+        run: |
+         cd kernel_workspace/kernel_platform
+         # 查找并替换特征字符串
+         TARGET_FILES=$(grep -rl "TG@qdykernel" . || true)
+          if [ -n "$TARGET_FILES" ]; then
+            echo "发现需要替换的文件："
+            echo "$TARGET_FILES"
+            sed -i 's/TG@qdykernel/酷安Fate007/g' $TARGET_FILES
+            echo "✅ 标识替换完成"
+          else
+            echo "⚠️ 未找到目标标识文件，继续执行"
+          fi
+
+      # 新增：节点2 - main.bin setup_lz4执行前后，备份lz4并对比
+      - name: 🔧 Set up SUSFS (配置 SUSFS)
+        run: |
+           cd kernel_workspace
+            git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
+            git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
+            
+            cd kernel_platform        
+            cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
+            cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
+            cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+            
+            cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./common/include/linux
+            cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./common/lib
+            cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./common/crypto
+            cp -r ../SukiSU_patch/other/zram/lz4k_oplus ./common/lib/
+            if [ "$DEVICES_NAME" = "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "oneplus_13t" ]; then
+            sed -i 's/^\(SUBLEVEL[[:space:]]*=[[:space:]]*\).*/\166/' ./common/Makefile
+            fi
+            # Apply patches
+            cd ./common
+            if [ "$DEVICES_NAME" != "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "realme_GT7" ]; then
+                files=(
+                    "lib/lz4/lz4_compress.c"
+                    "lib/lz4/lz4_decompress.c"
+                    "lib/lz4/lz4defs.h"
+                    "lib/lz4/lz4hc_compress.c"
+                )
+                for file in "${files[@]}"; do
+                    if [ -e "$file" ]; then
+                        rm "$file"
+                    fi
+                done
+            
+                # 执行main.bin setup_lz4（原逻辑保留）
+                cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
+                chmod +x main.bin
+                ./main.bin "setup_lz4"
+                rm -rf ./main.bin
+
+                # 新增：备份main.bin修改后的lz4目录
+                LZ4_AFTER_PATH="./lib/lz4"
+                if [ -d "$LZ4_AFTER_PATH" ]; then
+                  cp -r "$LZ4_AFTER_PATH" "${{ env.TRACE_DIR }}/lz4/main_bin后/"
+                  echo "✅ 已备份main.bin修改后的lz4：${{ env.TRACE_DIR }}/lz4/main_bin后/"
+                  
+                  # 新增：生成lz4差异日志（源码同步后 vs main.bin后）
+                  if [ -d "${{ env.TRACE_DIR }}/lz4/源码同步后/lz4" ]; then
+                    diff -urN "${{ env.TRACE_DIR }}/lz4/源码同步后/lz4" "${{ env.TRACE_DIR }}/lz4/main_bin后/lz4" > "${{ env.TRACE_DIR }}/差异日志/lz4_改动.diff" 2>/dev/null
+                    if [ -s "${{ env.TRACE_DIR }}/差异日志/lz4_改动.diff" ]; then
+                      echo "✅ lz4差异日志已生成：${{ env.TRACE_DIR }}/差异日志/lz4_改动.diff"
+                    else
+                      echo "lz4无改动" > "${{ env.TRACE_DIR }}/差异日志/lz4_改动.diff"
+                    fi
+                  else
+                    echo "lz4原始备份缺失，无法对比" > "${{ env.TRACE_DIR }}/差异日志/lz4_改动.diff"
+                  fi
+                else
+                  echo "⚠️ main.bin修改后的lz4目录不存在"
+                fi
+            fi
+            
+            if [ "${REPO_MANIFEST}" = "realme_GT7pro_Speed" ] && [ "${REPO_MANIFEST}" = "realme_GT7pro" ]; then
+                sed -i 's/-32,12 +32,38/-32,11 +32,37/g' 50_add_susfs_in_gki-android15-6.6.patch
+                sed -i '/#include <trace\/hooks\/fs.h>/d' 50_add_susfs_in_gki-android15-6.6.patch
+            fi
+            
+            patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || true
+            cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./
+            patch -p1 -F 3 < syscall_hooks.patch
+            
+            echo "完成"
+
+      - name: 🔧 Cache HMBird patch (缓存HMBird补丁)
+        uses: actions/cache@v3
+        with:
+          path: ${{ runner.temp }}/hmbird_patch.c
+          key: hmbird-patch-v1
+          restore-keys: |
+            hmbird-patch-v1
+            
+      - name: 🔧 Apply HMBird GKI patch (写入单Boot开机补丁)
+        run: |
+          PATCH_FILE="${{ runner.temp }}/hmbird_patch.c"
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "下载HMBird补丁..."
+            cp "${GITHUB_WORKSPACE}/hmbird_patch.c" "$PATCH_FILE"
+          fi
+          
+          cd kernel_workspace/kernel_platform/common/drivers
+          cp "$PATCH_FILE" hmbird_patch.c
+          
+          if ! grep -q "hmbird_patch.o" Makefile; then
+            echo "obj-y += hmbird_patch.o" >> Makefile
+          fi
+          echo "HMBird补丁应用完成"
+
+      # 新增：节点3 - main.bin setup_gki_config执行前后，备份配置并对比
+      - name: 🔧 Set gki_defconfig (设置编译配置)
+        env:
+          ENABLE_B: ${{ github.event.inputs.enable_feature_b }}       
         run: |
           cd kernel_workspace/kernel_platform
-          # 内核命名
-          if [ "${{ github.event.inputs.keep_original_settings }}" = "false" ] && [ -n "${{ github.event.inputs.custom_kernel_suffix }}" ]; then
-            DEFAULT_SUFFIX="${{ github.event.inputs.custom_kernel_suffix }}"
+          
+          # 新增：备份setup_gki_config前的配置文件（黑盒修改前）
+          CONFIG_BEFORE_PATH="./common/arch/arm64/configs"
+          if [ -d "$CONFIG_BEFORE_PATH" ]; then
+            cp -r "$CONFIG_BEFORE_PATH" "${{ env.TRACE_DIR }}/config/setup_gki前/"
+            echo "✅ 已备份配置原始状态：${{ env.TRACE_DIR }}/config/setup_gki前/"
+          else
+            echo "⚠️ 配置目录不存在，跳过备份"
+          fi
+
+          # 执行main.bin setup_gki_config（原逻辑保留）
+          cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
+          chmod +x main.bin
+          ./main.bin "setup_gki_config" "$ENABLE_B"
+          rm -rf ./main.bin
+
+          # 新增：备份setup_gki_config后的配置文件（黑盒修改后）
+          CONFIG_AFTER_PATH="./common/arch/arm64/configs"
+          if [ -d "$CONFIG_AFTER_PATH" ]; then
+            cp -r "$CONFIG_AFTER_PATH" "${{ env.TRACE_DIR }}/config/setup_gki后/"
+            echo "✅ 已备份配置修改后状态：${{ env.TRACE_DIR }}/config/setup_gki后/"
+            
+            # 新增：生成配置差异日志（setup_gki前 vs setup_gki后）
+            if [ -d "${{ env.TRACE_DIR }}/config/setup_gki前/configs" ]; then
+              # 整体配置目录对比
+              diff -urN "${{ env.TRACE_DIR }}/config/setup_gki前/configs" "${{ env.TRACE_DIR }}/config/setup_gki后/configs" > "${{ env.TRACE_DIR }}/差异日志/config_整体改动.diff" 2>/dev/null
+              # 单独对比核心文件gki_defconfig（更直观）
+              diff -u "${{ env.TRACE_DIR }}/config/setup_gki前/configs/gki_defconfig" "${{ env.TRACE_DIR }}/config/setup_gki后/configs/gki_defconfig" > "${{ env.TRACE_DIR }}/差异日志/gki_defconfig_改动.diff" 2>/dev/null
+              
+              [ -s "${{ env.TRACE_DIR }}/差异日志/config_整体改动.diff" ] || echo "配置目录无改动" > "${{ env.TRACE_DIR }}/差异日志/config_整体改动.diff"
+              [ -s "${{ env.TRACE_DIR }}/差异日志/gki_defconfig_改动.diff" ] || echo "gki_defconfig无改动" > "${{ env.TRACE_DIR }}/差异日志/gki_defconfig_改动.diff"
+              echo "✅ 配置差异日志已生成：${{ env.TRACE_DIR }}/差异日志/"
+            else
+              echo "配置原始备份缺失，无法对比" > "${{ env.TRACE_DIR }}/差异日志/config_整体改动.diff"
+              echo "配置原始备份缺失，无法对比" > "${{ env.TRACE_DIR }}/差异日志/gki_defconfig_改动.diff"
+            fi
+          else
+            echo "⚠️ 配置修改后目录不存在"
+          fi
+
+          # 原逻辑保留
+          sudo sed -i 's/check_defconfig//' ./common/build.config.gki
+          cd common
+          git add -A && git commit -a -m "BUILD Kernel"
+
+      - name: 🔧 Set Kernel name (设置内核名称)
+        env:
+          KEEP_ORIGINAL: ${{ github.event.inputs.keep_original_settings }}
+          CUSTOM_SUFFIX: ${{ github.event.inputs.custom_kernel_suffix }}
+        run: |
+          cd kernel_workspace/kernel_platform
+          echo "保持原设置: $KEEP_ORIGINAL"
+          echo "自定义后缀: $CUSTOM_SUFFIX"
+          echo "默认后缀: $DEFAULT_SUFFIX"
+          
+          if [ "$KEEP_ORIGINAL" = "false" ]; then
+            if [ -n "$CUSTOM_SUFFIX" ]; then
+              DEFAULT_SUFFIX="$CUSTOM_SUFFIX"
+              echo "使用自定义内核名称: $DEFAULT_SUFFIX"
+            else
+              echo "使用机型默认内核名称: $DEFAULT_SUFFIX"
+            fi
+          else
+            echo "保持原内核名称设置"
           fi
           ESCAPED_SUFFIX=$(printf '%s\n' "$DEFAULT_SUFFIX" | sed 's:[\/&]:\\&:g')
-          sed -i "s/-4k/$ESCAPED_SUFFIX/g" ./common/arch/arm64/configs/gki_defconfig
+          sudo sed -i "s/-4k/$ESCAPED_SUFFIX/g" ./common/arch/arm64/configs/gki_defconfig
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
-          # KPM配置
-          if [ "${{ github.event.inputs.KPM }}" = "true" ]; then
-            echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
-            sed -i 's/check_defconfig//' ./common/build.config.gki
-          fi
-          # sched_ext配置
-          if [ "${{ github.event.inputs.enable_feature_z }}" = "true" ]; then
-            cd .. && git clone https://github.com/showdo/sched_ext.git && cp -r ./sched_ext/* ./kernel_platform/common/kernel/sched && rm -rf ./sched_ext
-          fi
-          # 内核编译
-          export PATH="/usr/lib/ccache:$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"
-          export CCACHE_DIR="${{ env.CCACHE_DIR }}" && export KBUILD_BUILD_TIMESTAMP="${KERNEL_TIME}"
-          cd common && make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 gki_defconfig
-          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 Image 2>/dev/null
-          # KPM补丁
-          if [ "${{ github.event.inputs.KPM }}" = "true" ]; then
-            cd out/arch/arm64/boot && curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.0/patch_linux && chmod +x patch_linux && ./patch_linux 2>/dev/null && rm Image && mv oImage Image
-          fi
-          # 打包AnyKernel3
-          cd "${GITHUB_WORKSPACE}" && git clone https://github.com/FateYin1/AnyKernel3 --depth=1 && rm -rf ./AnyKernel3/.git
-          image_path=$(find "kernel_workspace/kernel_platform" -name "Image" | grep -E "boot/Image$" | head -n1)
-          [ -n "$image_path" ] && cp "$image_path" ./AnyKernel3/Image || echo "Image文件缺失"
-          # 下载SukiSU APK（可选）
-          run_id=$(gh api "repos/SukiSU-Ultra/SukiSU-Ultra/actions/workflows/build-manager.yml/runs?branch=main&status=success&per_page=1" --jq '.workflow_runs[0].id' 2>/dev/null || echo "")
-          [ -n "$run_id" ] && artifact_url=$(gh api "repos/SukiSU-Ultra/SukiSU-Ultra/actions/runs/$run_id/artifacts" | jq -r '.artifacts[] | select(.name == "manager") | .archive_download_url' 2>/dev/null || echo "")
-          [ -n "$artifact_url" ] && curl -fL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o manager.zip "$artifact_url" && unzip -j manager.zip "*.apk" -d ./AnyKernel3/ 2>/dev/null && rm manager.zip
 
-      # 上传备份和差异结果（核心产出，用于替代黑盒）
-      - name: 📤 上传备份与差异结果
+      - name: 🔧 Enable KPM Config (启用KPM配置)
+        if: ${{ github.event.inputs.KPM == 'true' }}
+        run: |
+          cd kernel_workspace/kernel_platform
+          echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
+          sed -i 's/check_defconfig//' ./common/build.config.gki
+          
+      - name: 🔧 Add sched_ext (写入风驰补丁)
+        if: ${{inputs.enable_feature_z }}
+        run: |
+         cd kernel_workspace/kernel_platform/
+         git clone https://github.com/showdo/sched_ext.git
+         cp -r ./sched_ext/* ./common/kernel/sched
+         rm -rf ./sched_ext/.git
+         cd common/kernel/sched  
+
+      - name: 🔨 Build Kernel (构建内核)
+        run: |
+          export PATH="/usr/lib/ccache:$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"          
+          export CCACHE_COMPILERCHECK="%compiler% -dumpmachine; %compiler% -dumpversion"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+          export CCACHE_MAXSIZE="8G"
+          export KBUILD_BUILD_TIMESTAMP="${KERNEL_TIME}"
+          cd kernel_workspace/kernel_platform/common
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  gki_defconfig
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  Image
+
+      - name: 🔨Apply KPM patch(应用KPM补丁)
+        if: ${{ github.event.inputs.KPM == 'true' }}
+        run: |
+           cd kernel_workspace/kernel_platform/common/out/arch/arm64/boot
+           curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.0/patch_linux
+           chmod +x patch_linux
+           ./patch_linux
+           rm -f Image
+           mv oImage Image
+           
+      - name: 📦 Make AnyKernel3 (创建AnyKernel3刷包)
+        run: |
+          git clone https://github.com/FateYin1/AnyKernel3 --depth=1
+          rm -rf ./AnyKernel3/.git
+          
+          image_path=""
+          if [ -f "kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image" ]; then
+            image_path="kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image"
+          elif [ -f "kernel_workspace/kernel_platform/out/arch/arm64/boot/Image" ]; then
+            image_path="kernel_workspace/kernel_platform/out/arch/arm64/boot/Image"
+          else
+            image_path=$(find "kernel_workspace/kernel_platform" -name "Image" | grep -E "boot/Image$" | head -n1)
+          fi
+          
+          if [ -z "$image_path" ] || [ ! -f "$image_path" ]; then
+            echo "::error ::未找到Image文件，构建失败"
+            exit 1
+          fi
+          
+          echo "✅ Image文件路径: $image_path"
+          cp "$image_path" ./AnyKernel3/Image
+
+      - name: 📥 Download SukiSU Ultra APK (下载管理器)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          run_id=$(gh api \
+            "repos/SukiSU-Ultra/SukiSU-Ultra/actions/workflows/build-manager.yml/runs?branch=main&status=success&per_page=1" \
+            --jq '.workflow_runs[0].id' || echo "")
+          if [[ -n "$run_id" ]]; then
+            artifact_url=$(gh api \
+              "repos/SukiSU-Ultra/SukiSU-Ultra/actions/runs/$run_id/artifacts" | \
+              jq -r '.artifacts[] | select(.name == "manager") | .archive_download_url' | head -n1)
+            if [[ -n "$artifact_url" ]]; then
+              curl -fL -H "Authorization: token $GITHUB_TOKEN" -o manager.zip "$artifact_url"
+              unzip -j manager.zip "*.apk" -d ./AnyKernel3/
+            fi
+          fi
+
+      # 新增：上传黑盒追踪备份和差异日志（核心产出，用于替代黑盒）
+      - name: 📤 上传黑盒追踪数据（备份+差异日志）
         uses: actions/upload-artifact@v4
         with:
-          name: 备份与差异_${{ env.DEVICES_NAME }}_${{ github.run_id }}
-          path: ${{ env.BACKUP_DIR }}/**/*
-          retention-days: 30
+          name: 黑盒追踪_${{ env.DEVICES_NAME }}_${{ github.run_id }}
+          path: ${{ env.TRACE_DIR }}/**/*
+          retention-days: 30  # 保留30天，足够分析
 
-      # 上传AnyKernel3（可选）
-      - name: 📤 上传编译产物
-        if: always()
+      - name: 📤 Upload AnyKernel3 (上传刷包)
         uses: actions/upload-artifact@v4
         with:
-          name: AK3_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_${{ github.event.inputs.KPM == 'true' && 'KPM_' || '' }}${{ github.event.inputs.enable_feature_z == 'true' && 'SCHED_' || '' }}
+          name: AK3_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_SuKiSU${{ github.event.inputs.KPM == 'true' && '_KPM' || '' }}${{ github.event.inputs.enable_feature_z == 'true' && '_SCHED' || '' }}
           path: ./AnyKernel3/*
-          retention-days: 7
