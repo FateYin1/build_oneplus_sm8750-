@@ -1,0 +1,220 @@
+name: 逆向加密文件 (main.bin/setup.bin)
+on:
+  workflow_dispatch:
+    inputs:
+      REPO_MANIFEST:
+        description: "📝选择机型（与原编译机型一致）"
+        required: true
+        type: choice
+        options:
+          - 'oneplus_13'
+          - 'oneplus_ace5_pro'
+          - 'oneplus_13t'
+          - 'oneplus_pad_2_pro'
+          - 'oneplus_ace5_ultra'
+          - 'realme_GT7'
+          - 'realme_GT7pro'
+          - 'realme_GT7pro_Speed'
+        default: 'oneplus_13'
+      BIN_PATH:
+        description: "🔑加密文件存放路径（GitHub仓库内路径，如：.github/workflows/Bin）"
+        required: true
+        default: ".github/workflows/Bin"
+
+
+jobs:
+  reverse:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 检出仓库（需包含加密文件main.bin/setup.bin）
+      - name: 📥 检出仓库（含加密文件）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # 2. 初始化逆向结果目录（所有逆向文件将存这里，最后可下载）
+      - name: 📂 创建逆向结果目录
+        run: |
+          REVERSE_DIR="${GITHUB_WORKSPACE}/逆向结果_${{ env.DEVICES_NAME }}"
+          mkdir -p "$REVERSE_DIR" \
+            "$REVERSE_DIR/setup_bin_逆向" \
+            "$REVERSE_DIR/main_bin_逆向" \
+            "$REVERSE_DIR/原始备份" \
+            "$REVERSE_DIR/操作日志"
+          echo "REVERSE_DIR=$REVERSE_DIR" >> $GITHUB_ENV
+          echo "✅ 逆向结果目录创建完成：$REVERSE_DIR"
+
+      # 3. 安装依赖（含strace，用于跟踪系统调用）
+      - name: 🛠 安装逆向工具
+        run: |
+          sudo apt update -qq
+          sudo apt install -y strace diffutils tree  # strace跟踪调用，diff对比文件，tree生成目录结构
+          # 记录工具版本（用于日志）
+          strace --version | head -n1 > "${{ env.REVERSE_DIR }}/操作日志/工具版本.txt"
+          diff --version | head -n1 >> "${{ env.REVERSE_DIR }}/操作日志/工具版本.txt"
+
+      # 4. 设置机型环境变量
+      - name: ⚙️ 配置机型变量
+        run: |
+          case "${{ github.event.inputs.REPO_MANIFEST }}" in
+            oneplus_ace5_pro)
+              echo "REPO_MANIFEST=JiuGeFaCai_oneplus_ace5_pro_v" >> $GITHUB_ENV
+              echo "DEVICES_NAME=oneplus_ace5_pro" >> $GITHUB_ENV
+              ;;
+            oneplus_13)
+              echo "REPO_MANIFEST=JiuGeFaCai_oneplus_13_v" >> $GITHUB_ENV
+              echo "DEVICES_NAME=oneplus_13" >> $GITHUB_ENV
+              ;;
+            *)
+              echo "REPO_MANIFEST=${{ github.event.inputs.REPO_MANIFEST }}" >> $GITHUB_ENV
+              echo "DEVICES_NAME=${{ github.event.inputs.REPO_MANIFEST }}" >> $GITHUB_ENV
+              ;;
+          esac
+
+      # 5. 同步内核源码（与原编译流程一致，确保环境相同）
+      - name: 📥 同步内核源码（逆向基础环境）
+        run: |
+          mkdir -p kernel_workspace && cd kernel_workspace
+          # 记录同步日志
+          repo init -u https://github.com/showdo/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m ${REPO_MANIFEST}.xml --depth=1 2>&1 | tee "${{ env.REVERSE_DIR }}/操作日志/repo_init.log"
+          repo sync -c -j$(nproc --all) --no-tags 2>&1 | tee "${{ env.REVERSE_DIR }}/操作日志/repo_sync.log"
+          # 备份同步后的完整环境（用于后续对比）
+          cp -r kernel_platform "${{ env.REVERSE_DIR }}/原始备份/同步后_kernel_platform"
+          echo "✅ 内核源码同步完成，原始环境已备份"
+
+      # 6. 逆向 setup.bin（第一步：执行前备份）
+      - name: 🔍 逆向setup.bin - 执行前备份
+        run: |
+          # 进入setup.bin要执行的目录（KernelSU目录）
+          cd kernel_workspace/kernel_platform
+          # 先执行SuKiSU的setup.sh（与原流程一致，确保setup.bin能正常运行）
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/susfs-main/kernel/setup.sh" -o setup.sh && bash setup.sh susfs-main 2>&1 | tee "${{ env.REVERSE_DIR }}/操作日志/sukisu_setup.log"
+          # 备份KernelSU目录（setup.bin执行前状态）
+          cp -r KernelSU "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup前_KernelSU"
+          # 记录目录结构（方便对比）
+          tree KernelSU -L 3 > "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup前_KernelSU_目录结构.txt"
+          echo "✅ setup.bin执行前备份完成"
+
+      # 7. 逆向 setup.bin（第二步：执行并跟踪）
+      - name: 🔍 逆向setup.bin - 执行+跟踪
+        run: |
+          cd kernel_workspace/kernel_platform/KernelSU
+          # 复制加密文件到当前目录（从仓库指定路径读取）
+          cp "${GITHUB_WORKSPACE}/${{ github.event.inputs.BIN_PATH }}/setup.bin" ./
+          chmod +x setup.bin
+          # 1. 用strace跟踪所有系统调用（文件读写、命令执行）
+          sudo strace -f -o "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup.bin_strace.log" -e trace=file,execve,openat,write,unlink,chmod ./setup.bin 2>&1 | tee "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup.bin_执行输出.log"
+          # 2. 执行后备份KernelSU目录（记录变化）
+          cp -r . "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup后_KernelSU"
+          # 3. 记录执行后目录结构
+          tree . -L 3 > "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup后_KernelSU_目录结构.txt"
+          echo "✅ setup.bin执行跟踪完成"
+
+      # 8. 逆向 setup.bin（第三步：生成差异报告）
+      - name: 🔍 逆向setup.bin - 生成差异报告
+        run: |
+          # 对比执行前后的文件变化，生成diff补丁（显示具体修改内容）
+          diff -urN \
+            "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup前_KernelSU" \
+            "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup后_KernelSU" \
+            > "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup.bin_文件变化.diff" 2>&1 | tee "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup.bin_diff_日志.txt"
+          # 提取新增文件列表
+          comm -23 \
+            <(find "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup后_KernelSU" -type f | sed "s|${{ env.REVERSE_DIR }}/setup_bin_逆向/setup后_KernelSU/||") \
+            <(find "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup前_KernelSU" -type f | sed "s|${{ env.REVERSE_DIR }}/setup_bin_逆向/setup前_KernelSU/||") \
+            > "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup.bin_新增文件.txt"
+          # 提取删除文件列表
+          comm -23 \
+            <(find "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup前_KernelSU" -type f | sed "s|${{ env.REVERSE_DIR }}/setup_bin_逆向/setup前_KernelSU/||") \
+            <(find "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup后_KernelSU" -type f | sed "s|${{ env.REVERSE_DIR }}/setup_bin_逆向/setup后_KernelSU/||") \
+            > "${{ env.REVERSE_DIR }}/setup_bin_逆向/setup.bin_删除文件.txt"
+          echo "✅ setup.bin差异报告生成完成"
+
+      # 9. 逆向 main.bin（第一步：执行前备份）
+      - name: 🔍 逆向main.bin - 执行前备份
+        run: |
+          # 进入main.bin要执行的目录（common目录）
+          cd kernel_workspace/kernel_platform/common
+          # 备份LZ4目录（main.bin执行前状态）
+          cp -r lib/lz4 "${{ env.REVERSE_DIR }}/main_bin_逆向/main前_lz4"
+          # 记录LZ4目录结构
+          tree lib/lz4 > "${{ env.REVERSE_DIR }}/main_bin_逆向/main前_lz4_目录结构.txt"
+          # 备份当前目录下的其他可能被修改的文件
+          cp -r lib "${{ env.REVERSE_DIR }}/main_bin_逆向/main前_lib"
+          echo "✅ main.bin执行前备份完成"
+
+      # 10. 逆向 main.bin（第二步：执行并跟踪）
+      - name: 🔍 逆向main.bin - 执行+跟踪
+        run: |
+          cd kernel_workspace/kernel_platform/common
+          # 复制加密文件到当前目录
+          cp "${GITHUB_WORKSPACE}/${{ github.event.inputs.BIN_PATH }}/main.bin" ./
+          chmod +x main.bin
+          # 1. 用strace跟踪系统调用
+          sudo strace -f -o "${{ env.REVERSE_DIR }}/main_bin_逆向/main.bin_strace.log" -e trace=file,execve,openat,write,unlink,chmod ./main.bin "setup_lz4" 2>&1 | tee "${{ env.REVERSE_DIR }}/main_bin_逆向/main.bin_执行输出.log"
+          # 2. 执行后备份LZ4目录（关键：捕获新生成的源码文件）
+          cp -r lib/lz4 "${{ env.REVERSE_DIR }}/main_bin_逆向/main后_lz4"
+          # 3. 记录执行后目录结构
+          tree lib/lz4 > "${{ env.REVERSE_DIR }}/main_bin_逆向/main后_lz4_目录结构.txt"
+          # 4. 单独备份新生成的文件（方便后续提取源码）
+          mkdir -p "${{ env.REVERSE_DIR }}/main_bin_逆向/main.bin_生成的源码"
+          cp -r lib/lz4/* "${{ env.REVERSE_DIR }}/main_bin_逆向/main.bin_生成的源码/"
+          echo "✅ main.bin执行跟踪完成"
+
+      # 11. 逆向 main.bin（第三步：生成差异报告）
+      - name: 🔍 逆向main.bin - 生成差异报告
+        run: |
+          # 对比LZ4目录执行前后的变化
+          diff -urN \
+            "${{ env.REVERSE_DIR }}/main_bin_逆向/main前_lz4" \
+            "${{ env.REVERSE_DIR }}/main_bin_逆向/main后_lz4" \
+            > "${{ env.REVERSE_DIR }}/main_bin_逆向/main.bin_文件变化.diff" 2>&1 | tee "${{ env.REVERSE_DIR }}/main_bin_逆向/main.bin_diff_日志.txt"
+          # 提取新增文件列表（如lz4.c、lz4armv8.S）
+          comm -23 \
+            <(find "${{ env.REVERSE_DIR }}/main_bin_逆向/main后_lz4" -type f | sed "s|${{ env.REVERSE_DIR }}/main_bin_逆向/main后_lz4/||") \
+            <(find "${{ env.REVERSE_DIR }}/main_bin_逆向/main前_lz4" -type f | sed "s|${{ env.REVERSE_DIR }}/main_bin_逆向/main前_lz4/||") \
+            > "${{ env.REVERSE_DIR }}/main_bin_逆向/main.bin_新增文件.txt"
+          # 提取删除文件列表（如旧的lz4_compress.c）
+          comm -23 \
+            <(find "${{ env.REVERSE_DIR }}/main_bin_逆向/main前_lz4" -type f | sed "s|${{ env.REVERSE_DIR }}/main_bin_逆向/main前_lz4/||") \
+            <(find "${{ env.REVERSE_DIR }}/main_bin_逆向/main后_lz4" -type f | sed "s|${{ env.REVERSE_DIR }}/main_bin_逆向/main后_lz4/||") \
+            > "${{ env.REVERSE_DIR }}/main_bin_逆向/main.bin_删除文件.txt"
+          echo "✅ main.bin差异报告生成完成"
+
+      # 12. 打包逆向结果（方便下载）
+      - name: 📦 打包逆向结果
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          # 生成逆向说明文档
+          cat > "${{ env.REVERSE_DIR }}/逆向结果说明.md" << EOF
+          # 加密文件逆向结果说明
+          ## 1. 目录结构
+          - setup_bin_逆向：setup.bin的执行日志、前后备份、文件变化
+          - main_bin_逆向：main.bin的执行日志、生成的源码（关键！）
+          - 原始备份：内核源码同步后的初始环境
+          - 操作日志：工具版本、repo同步等辅助日志
+
+          ## 2. 核心逆向成果
+          1. main.bin_生成的源码：包含main.bin生成的所有新文件（如lz4.c、lz4armv8.S）
+          2. *.diff文件：显示加密文件修改的具体内容（可直接查看代码变更）
+          3. strace.log：跟踪加密文件的所有系统调用（如打开了哪些文件、执行了哪些命令）
+          4. 新增/删除文件.txt：明确加密文件对文件的增删操作
+
+          ## 3. 后续使用建议
+          1. 从「main.bin_生成的源码」提取新文件内容，作为替代脚本的模板
+          2. 从「*.diff」文件提取setup.bin对Makefile/配置文件的修改逻辑
+          3. 从「strace.log」验证是否有隐藏操作（如偷偷执行其他命令）
+          EOF
+          # 压缩目录（避免文件过多）
+          zip -r "${{ env.REVERSE_DIR }}.zip" "${{ env.REVERSE_DIR }}"
+          echo "✅ 逆向结果打包完成：${{ env.REVERSE_DIR }}.zip"
+
+      # 13. 上传逆向结果（关键：下载后分析）
+      - name: 📤 上传逆向结果（可下载）
+        uses: actions/upload-artifact@v4
+        with:
+          name: 加密文件逆向结果_${{ env.DEVICES_NAME }}
+          path: |
+            ${{ env.REVERSE_DIR }}.zip
+            ${{ env.REVERSE_DIR }}/**/*
+          retention-days: 90  # 保留90天，足够分析
