@@ -239,8 +239,7 @@ jobs:
           cd ..
           chmod +x setup.bin
           
-          # 修复点1：统一使用setup_bin目录（下划线），与初始化保持一致
-          # 增加目录存在性检查，确保日志目录已创建
+          # 确保监控目录存在
           if [ ! -d "${{ env.BB_MONITOR_DIR }}/setup_bin" ]; then
             mkdir -p "${{ env.BB_MONITOR_DIR }}/setup_bin"
             echo "⚠️ 自动创建缺失的监控目录：${{ env.BB_MONITOR_DIR }}/setup_bin"
@@ -250,11 +249,16 @@ jobs:
           if head -n1 setup.bin | grep -E "^#!/bin/(bash|sh|python)"; then
             cat setup.bin > "${{ env.BB_MONITOR_DIR }}/setup_bin/setup.bin脚本源码.log"  # 脚本直接存源码
           else
-            # 修复点2：日志路径从setup.bin改为setup_bin（下划线）
             ldd setup.bin 2> "${{ env.BB_MONITOR_DIR }}/setup_bin/setup.bin动态依赖.log"  # 二进制存依赖
           fi
 
           # 3. 黑盒执行：strace抓全量操作（文件读写/命令执行）
+          # 修复：检查kernel目录是否存在，不存在则创建
+          if [ ! -d "kernel" ]; then
+            mkdir -p kernel
+            echo "⚠️ 自动创建缺失的kernel目录"
+          fi
+          
           sudo -E -u runner strace -f -tt -v -s 8192 \
             -e trace=execve,openat,read,write,chmod,unlink,rename,stat \
             -o "${{ env.BB_MONITOR_DIR }}/setup_bin/setup.bin系统调用.log" \
@@ -303,6 +307,8 @@ jobs:
           if [ "$DEVICES_NAME" != "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "realme_GT7" ]; then
             # 1. 黑盒前置：备份lz4目录（用于对比黑盒修改）
             mkdir -p "${{ env.BB_MONITOR_DIR }}/main_bin_setup_lz4/执行前_lz4备份"
+            # 确保lib/lz4目录存在
+            mkdir -p ./lib/lz4
             cp -r ./lib/lz4/* "${{ env.BB_MONITOR_DIR }}/main_bin_setup_lz4/执行前_lz4备份/" 2>/dev/null || true
             find ./lib/lz4 -type f -exec sha256sum {} \; > "${{ env.BB_MONITOR_DIR }}/main_bin_setup_lz4/执行前_lz4哈希.log"
 
@@ -316,9 +322,10 @@ jobs:
             file main.bin > "${{ env.BB_MONITOR_DIR }}/main_bin_setup_lz4/main.bin文件类型.log"
 
             # 4. 黑盒执行：strace抓lz4相关操作（重点跟踪lib/lz4）
+            # 修复：将无效的trace-path替换为正确的path过滤方式
             sudo -E strace -f -tt -v -s 8192 \
               -e trace=execve,openat,read,write,chmod,unlink,rename \
-              -e trace-path="./lib/lz4/*" \
+              -e "path=./lib/lz4/*" \
               -o "${{ env.BB_MONITOR_DIR }}/main_bin_setup_lz4/main.bin系统调用.log" \
               ./main.bin "setup_lz4" 2>&1 | tee "${{ env.BB_MONITOR_DIR }}/main_bin_setup_lz4/main.bin控制台输出.log"
 
@@ -372,6 +379,8 @@ jobs:
 
           # 1. 黑盒前置：备份gki_defconfig（对比黑盒修改）
           mkdir -p "${{ env.BB_MONITOR_DIR }}/main_bin_setup_gki/执行前_config备份"
+          # 确保配置文件目录存在
+          mkdir -p ./common/arch/arm64/configs
           cp ./common/arch/arm64/configs/gki_defconfig "${{ env.BB_MONITOR_DIR }}/main_bin_setup_gki/执行前_config备份/"
           cat ./common/arch/arm64/configs/gki_defconfig > "${{ env.BB_MONITOR_DIR }}/main_bin_setup_gki/执行前_gki_defconfig_full.log"
 
@@ -381,9 +390,10 @@ jobs:
           file main.bin > "${{ env.BB_MONITOR_DIR }}/main_bin_setup_gki/main.bin文件类型.log"
 
           # 3. 黑盒执行：strace抓config相关操作（重点跟踪gki_defconfig）
+          # 修复：将无效的trace-path替换为正确的path过滤方式
           sudo -E strace -f -tt -v -s 8192 \
             -e trace=execve,openat,read,write,chmod,unlink,rename \
-            -e trace-path="./common/arch/arm64/configs/*" \
+            -e "path=./common/arch/arm64/configs/*" \
             -o "${{ env.BB_MONITOR_DIR }}/main_bin_setup_gki/main.bin系统调用.log" \
             ./main.bin "setup_gki_config" "$ENABLE_B" 2>&1 | tee "${{ env.BB_MONITOR_DIR }}/main_bin_setup_gki/main.bin控制台输出.log"
 
