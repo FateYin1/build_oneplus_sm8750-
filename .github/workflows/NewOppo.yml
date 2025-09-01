@@ -22,16 +22,22 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # 1. 检出仓库代码
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 设置机型环境变量
+      # 2. 设置机型环境变量（匹配showdo/kernel_manifest的xml命名）
+      - name: ⚙️ 设置机型环境变量
         run: |
           case "${{ github.event.inputs.REPO_MANIFEST }}" in
             oneplus_ace5_pro)
               echo "REPO_MANIFEST=JiuGeFaCai_oneplus_ace5_pro_v" >> $GITHUB_ENV
               echo "DEVICES_NAME=oneplus_ace5_pro" >> $GITHUB_ENV
+              ;;
+            oneplus_13)
+              echo "REPO_MANIFEST=JiuGeFaCai_oneplus_13_v" >> $GITHUB_ENV
+              echo "DEVICES_NAME=oneplus_13" >> $GITHUB_ENV
               ;;
             *)
               echo "REPO_MANIFEST=${{ github.event.inputs.REPO_MANIFEST }}" >> $GITHUB_ENV
@@ -39,43 +45,84 @@ jobs:
               ;;
           esac
 
-      - name: 安装依赖（含监控工具）
+      # 3. 安装依赖（含监控工具+卸载旧repo）
+      - name: 📦 安装依赖（含监控工具）
         run: |
+          # 清理apt锁文件，避免冲突
+          sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock
+          # 更新apt并安装依赖
           sudo apt update -y
-          sudo apt install -y git ccache inotify-tools strace coreutils python3 python3-pip
-          # 卸载系统旧版repo（避免冲突）
+          sudo apt install -y \
+            git ccache inotify-tools strace coreutils python3 python3-pip \
+            build-essential libelf-dev flex bison libssl-dev  # 补充内核编译基础依赖
+          # 卸载系统旧版repo，避免路径冲突
           sudo apt remove -y repo || true
+          echo "✅ 依赖安装完成，旧版repo已卸载"
 
-      - name: 安装最新版Repo工具（修复警告）
+      # 4. 安装最新版Repo工具（修复命令找不到+语法警告）
+      - name: 📥 安装最新版Repo工具（确保命令可识别）
         run: |
-          # 创建用户级二进制目录（确保可写）
-          mkdir -p ~/bin
-          echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
-          source ~/.bashrc
+          # 1. 使用绝对路径创建repo目录（GitHub Actions runner固定home路径）
+          REPO_BIN_DIR="/home/runner/bin"
+          mkdir -p "$REPO_BIN_DIR"
           
-          # 下载最新版repo launcher（来自官方源）
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-          chmod a+x ~/bin/repo
+          # 2. 即时添加路径到当前会话PATH（非交互式shell无需依赖.bashrc）
+          export PATH="$REPO_BIN_DIR:$PATH"
+          echo "当前PATH：$PATH"  # 验证路径已添加
           
-          # 修复Python语法警告（替换utcnow()为 timezone-aware 写法）
-          sed -i 's/import datetime/import datetime\nfrom datetime import UTC/' ~/bin/repo
-          sed -i 's/datetime.datetime.utcnow()/datetime.datetime.now(UTC)/g' ~/bin/repo
+          # 3. 下载官方最新repo launcher
+          curl -fL https://storage.googleapis.com/git-repo-downloads/repo > "$REPO_BIN_DIR/repo"
+          if [ $? -ne 0 ]; then
+            echo "❌ 下载repo失败，检查网络连接"
+            exit 1
+          fi
           
-          # 验证安装
-          echo "使用的repo路径：$(which repo)"
-          echo "repo版本：$(repo --version | head -n1)"
+          # 4. 设置可执行权限并修复Python语法警告
+          chmod a+x "$REPO_BIN_DIR/repo"
+          sed -i 's/import datetime/import datetime\nfrom datetime import UTC/' "$REPO_BIN_DIR/repo"
+          sed -i 's/datetime.datetime.utcnow()/datetime.datetime.now(UTC)/g' "$REPO_BIN_DIR/repo"
+          
+          # 5. 刷新命令哈希表+验证安装（确保系统立即识别repo）
+          hash -r
+          if command -v repo &> /dev/null; then
+            echo "✅ repo安装成功"
+            echo "repo路径：$(which repo)"
+            echo "repo版本：$(repo --version | head -n1)"
+          else
+            echo "❌ repo命令仍未找到，安装失败"
+            exit 1
+          fi
 
-      - name: 同步内核源码
+      # 5. 同步内核源码（显式导出PATH，避免子shell问题）
+      - name: 📥 同步内核源码
         run: |
-          mkdir kernel_workspace && cd kernel_workspace
-          # 使用新版repo初始化，消除警告
-          repo init -u https://github.com/showdo/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m ${REPO_MANIFEST}.xml --depth=1
-          # 同步源码，增加--no-clone-bundle提升兼容性
+          # 显式导出repo路径（确保子shell能识别）
+          export PATH="/home/runner/bin:$PATH"
+          
+          # 创建源码目录并初始化repo（匹配showdo/kernel_manifest的分支和xml）
+          mkdir -p kernel_workspace && cd kernel_workspace
+          echo "初始化repo：分支=oneplus/sm8750，配置文件=${REPO_MANIFEST}.xml"
+          repo init -u https://github.com/showdo/kernel_manifest.git \
+            -b refs/heads/oneplus/sm8750 \
+            -m ${REPO_MANIFEST}.xml \
+            --depth=1
+          
+          # 同步源码（增加--no-clone-bundle提升兼容性，减少网络错误）
+          echo "开始同步源码，线程数=$(nproc)"
           repo sync -c -j$(nproc) --no-tags --no-clone-bundle
+          
+          # 验证源码同步结果
+          if [ -d "kernel_platform/common" ]; then
+            echo "✅ 源码同步完成，核心目录kernel_platform/common存在"
+          else
+            echo "❌ 源码同步失败，未找到kernel_platform/common目录"
+            exit 1
+          fi
 
-      - name: 核心步骤：监控并生成LZ4/ZSTD补丁（含汇编文件）
+      # 6. 核心：监控并生成LZ4/ZSTD补丁（含.s汇编文件）
+      - name: 🔍 监控并生成LZ4/ZSTD补丁（含汇编文件）
         run: |
-          # 定义关键路径
+          # 定义关键路径（基于同步后的源码结构）
           COMMON_DIR="kernel_workspace/kernel_platform/common"
           LZ4_DIR="$COMMON_DIR/lib/lz4"       # LZ4核心目录
           ZSTD_DIR="$COMMON_DIR/lib/zstd"     # ZSTD核心目录
@@ -84,19 +131,19 @@ jobs:
           MONITOR_LOG="${GITHUB_WORKSPACE}/monitor_logs"     # 监控日志
           mkdir -p "$BACKUP_DIR" "$PATCH_DIR" "$MONITOR_LOG"
 
-          # -------------------------- 1. 备份原始文件（含汇编文件） --------------------------
+          # -------------------------- 1. 备份LZ4/ZSTD原始文件（含汇编） --------------------------
           echo "📋 备份LZ4/ZSTD原始文件（含.s汇编文件）"
           
-          # 备份LZ4相关文件（明确包含.s汇编文件）
-          for file in $(find "$LZ4_DIR" -type f \( -name "*.c" -o -name "*.h" -o -name "*.s" -o -name "Makefile" -o -name "*.mk" \)); do
-            rel_path="${file#$COMMON_DIR/}"  # 相对路径（如lib/lz4/lz4_asm.s）
+          # 备份LZ4相关文件（覆盖.c/.h/.s/Makefile/.mk）
+          find "$LZ4_DIR" -type f \( -name "*.c" -o -name "*.h" -o -name "*.s" -o -name "Makefile" -o -name "*.mk" \) | while read -r file; do
+            rel_path="${file#$COMMON_DIR/}"  # 保留相对路径（如lib/lz4/lz4_asm.s）
             mkdir -p "$BACKUP_DIR/$(dirname "$rel_path")"
             cp "$file" "$BACKUP_DIR/$rel_path"
             echo "✅ 备份LZ4文件：$rel_path"
           done
           
-          # 备份ZSTD相关文件（明确包含.s汇编文件）
-          for file in $(find "$ZSTD_DIR" -type f \( -name "*.c" -o -name "*.h" -o -name "*.s" -o -name "Makefile" -o -name "*.mk" \)); do
+          # 备份ZSTD相关文件（同LZ4规则）
+          find "$ZSTD_DIR" -type f \( -name "*.c" -o -name "*.h" -o -name "*.s" -o -name "Makefile" -o -name "*.mk" \) | while read -r file; do
             rel_path="${file#$COMMON_DIR/}"
             mkdir -p "$BACKUP_DIR/$(dirname "$rel_path")"
             cp "$file" "$BACKUP_DIR/$rel_path"
@@ -106,7 +153,7 @@ jobs:
           # -------------------------- 2. 启动多维度监控（聚焦LZ4/ZSTD） --------------------------
           echo "🔍 启动监控（仅跟踪LZ4/ZSTD目录）"
           
-          # 2.1 inotify实时监控（仅监控LZ4和ZSTD目录）
+          # 2.1 inotify实时监控（捕获创建/删除/修改/移动事件）
           INOTIFY_LOG="$MONITOR_LOG/inotify.log"
           inotifywait -m -r \
             --timefmt "%Y-%m-%d %H:%M:%S" \
@@ -114,85 +161,108 @@ jobs:
             -e create -e delete -e modify -e move \
             "$LZ4_DIR" "$ZSTD_DIR" > "$INOTIFY_LOG" 2>&1 &
           INOTIFY_PID=$!
+          echo "inotify监控PID：$INOTIFY_PID"
           
-          # 2.2 记录git初始状态（用于后续diff）
+          # 2.2 git基准状态记录（用于后续diff对比）
           cd "$COMMON_DIR"
-          git add -A
-          git commit -m "Initial state before main.bin" || true
+          git add -A  # 暂存所有文件
+          git commit -m "Initial state before main.bin execution" || true  # 允许空提交
           INIT_COMMIT=$(git rev-parse HEAD)
+          echo "git基准提交：$INIT_COMMIT"
 
-          # -------------------------- 3. 执行main.bin（触发修改） --------------------------
+          # -------------------------- 3. 执行main.bin（触发LZ4修改） --------------------------
           echo "🔧 执行main.bin（仅关注LZ4/ZSTD修改）"
           cd "$COMMON_DIR"
           
-          # 清理原有文件（模拟原工作流）
+          # 1. 清理原有LZ4文件（模拟原工作流逻辑）
           rm -f lib/lz4/lz4_compress.c lib/lz4/lz4_decompress.c lib/lz4/lz4defs.h lib/lz4/lz4hc_compress.c
           
-          # 执行加密脚本（假设main.bin在当前目录）
-          cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
+          # 2. 复制并执行加密脚本main.bin
+          MAIN_BIN_PATH="${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin"
+          if [ ! -f "$MAIN_BIN_PATH" ]; then
+            echo "❌ 未找到main.bin，路径：$MAIN_BIN_PATH"
+            exit 1
+          fi
+          cp "$MAIN_BIN_PATH" ./
           chmod +x main.bin
           
-          # 用strace监控系统调用（仅记录LZ4/ZSTD相关文件操作）
+          # 3. strace监控系统调用（仅记录文件操作）
           STRACE_LOG="$MONITOR_LOG/strace.log"
           strace -f -e trace=file -o "$STRACE_LOG" ./main.bin "setup_lz4"
           
-          # 停止inotify监控
+          # 4. 停止监控并清理临时文件
           kill $INOTIFY_PID
           rm -f main.bin
+          echo "✅ main.bin执行完成，监控已停止"
 
           # -------------------------- 4. 分析监控结果（提取LZ4/ZSTD改动） --------------------------
-          echo "📊 分析监控结果，提取LZ4/ZSTD改动"
+          echo "📊 分析监控结果，提取LZ4/ZSTD改动文件"
           
-          # 4.1 从git diff提取LZ4/ZSTD改动
-          git diff $INIT_COMMIT --name-only | grep -E "^lib/lz4/|^lib/zstd/" > "$MONITOR_LOG/git_changed.txt"
+          # 4.1 从git diff提取改动（精准到源码文件）
+          git diff "$INIT_COMMIT" --name-only | grep -E "^lib/lz4/|^lib/zstd/" > "$MONITOR_LOG/git_changed.txt"
           
-          # 4.2 从inotify提取LZ4/ZSTD改动
+          # 4.2 从inotify提取改动（实时文件事件）
           grep -E "$LZ4_DIR|$ZSTD_DIR" "$INOTIFY_LOG" | awk '{print $3}' | sed "s|$COMMON_DIR/||" >> "$MONITOR_LOG/inotify_changed.txt"
           
-          # 4.3 从strace提取LZ4/ZSTD改动
+          # 4.3 从strace提取改动（系统调用层面）
           grep -E "$LZ4_DIR|$ZSTD_DIR" "$STRACE_LOG" | awk -F'"' '{print $2}' | sed "s|$COMMON_DIR/||" >> "$MONITOR_LOG/strace_changed.txt"
           
-          # 4.4 整合所有改动文件（去重）
+          # 4.4 整合并去重（避免重复记录）
           cat "$MONITOR_LOG/git_changed.txt" "$MONITOR_LOG/inotify_changed.txt" "$MONITOR_LOG/strace_changed.txt" \
             | sort | uniq | grep -E "^lib/lz4/|^lib/zstd/" > "$MONITOR_LOG/all_changed.txt"
           
-          echo "=== 检测到的LZ4/ZSTD改动文件 ==="
-          cat "$MONITOR_LOG/all_changed.txt"
+          # 输出改动文件列表
+          echo -e "\n=== 检测到的LZ4/ZSTD改动文件 ==="
+          if [ -s "$MONITOR_LOG/all_changed.txt" ]; then
+            cat "$MONITOR_LOG/all_changed.txt"
+          else
+            echo "⚠️ 未检测到LZ4/ZSTD改动文件"
+          fi
 
-          # -------------------------- 5. 生成纯净的LZ4/ZSTD补丁（含汇编文件） --------------------------
-          echo "🔨 生成LZ4/ZSTD补丁（含.s汇编文件）"
+          # -------------------------- 5. 生成纯净LZ4/ZSTD补丁（含汇编） --------------------------
+          echo -e "\n🔨 生成LZ4/ZSTD补丁（含.s汇编文件）"
           
           while read -r file; do
-            # 处理修改的文件（生成diff补丁）
+            # 场景1：文件被修改（生成diff补丁）
             if [ -f "$BACKUP_DIR/$file" ] && [ -f "$COMMON_DIR/$file" ]; then
-              # 生成补丁（忽略空白差异）
-              diff -u -w "$BACKUP_DIR/$file" "$COMMON_DIR/$file" > "$PATCH_DIR/$(echo "$file" | tr '/' '_').patch"
-              if [ -s "$PATCH_DIR/$(echo "$file" | tr '/' '_').patch" ]; then
-                echo "✅ 生成补丁：$file"
+              # 生成补丁（-u：统一格式，-w：忽略空白差异）
+              patch_filename="$(echo "$file" | tr '/' '_').patch"
+              diff -u -w "$BACKUP_DIR/$file" "$COMMON_DIR/$file" > "$PATCH_DIR/$patch_filename"
+              
+              # 过滤空补丁（无实际改动的文件）
+              if [ -s "$PATCH_DIR/$patch_filename" ]; then
+                echo "✅ 生成补丁：$file → $patch_filename"
               else
-                rm "$PATCH_DIR/$(echo "$file" | tr '/' '_').patch"  # 空补丁删除
+                rm "$PATCH_DIR/$patch_filename"
+                echo "⚠️ 跳过空补丁：$file"
               fi
               
-            # 处理新增的文件（直接保存）
+            # 场景2：文件新增（直接保存完整文件）
             elif [ ! -f "$BACKUP_DIR/$file" ] && [ -f "$COMMON_DIR/$file" ]; then
-              mkdir -p "$PATCH_DIR/$(dirname "$file")"
-              cp "$COMMON_DIR/$file" "$PATCH_DIR/$file"
+              new_file_path="$PATCH_DIR/$file"
+              mkdir -p "$(dirname "$new_file_path")"
+              cp "$COMMON_DIR/$file" "$new_file_path"
               echo "✅ 保存新增文件：$file"
             fi
           done < "$MONITOR_LOG/all_changed.txt"
 
           # 验证补丁生成结果
+          echo -e "\n=== 补丁生成总结 ==="
           if [ -n "$(ls -A "$PATCH_DIR" 2>/dev/null)" ]; then
-            echo "✅ LZ4/ZSTD补丁生成完成，路径：$PATCH_DIR"
+            echo "✅ 补丁生成完成，共$(ls -1 "$PATCH_DIR" | wc -l)个文件"
+            echo "补丁目录：$PATCH_DIR"
+            ls -1 "$PATCH_DIR"
           else
-            echo "⚠️ 未检测到LZ4/ZSTD改动，未生成补丁"
+            echo "⚠️ 未生成任何补丁（可能main.bin未修改LZ4/ZSTD）"
           fi
 
-      - name: 上传LZ4/ZSTD补丁（含汇编文件）
+      # 7. 上传产物（补丁+监控日志）
+      - name: 📤 上传LZ4/ZSTD补丁及监控日志
         uses: actions/upload-artifact@v4
         with:
           name: lz4_zstd_patches_with_asm_${{ env.DEVICES_NAME }}
           path: |
-            ./lz4_zstd_patches/  # 最终补丁（含.s汇编文件）
-            ./monitor_logs/      # 监控日志（用于排查）
-          retention-days: 365
+            ./lz4_zstd_patches/**/*        # 核心：LZ4/ZSTD补丁（含汇编）
+            ./lz4_zstd_backup/**/*         # 原始文件备份（对比用）
+            ./monitor_logs/**/*            # 监控日志（问题排查用）
+          retention-days: 365  # 长期保留，便于后续移植和排查
