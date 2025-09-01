@@ -1,4 +1,4 @@
-name: Build_oneplus_sm8750 (命令监控版)
+name: Build_oneplus_sm8750 (修复环境检测版)
 on:
   workflow_dispatch:
     inputs:
@@ -268,9 +268,16 @@ jobs:
               exit 1
             fi
             
+            # 设置GitHub Actions环境变量（绕过环境检测）
+            export GITHUB_ACTIONS="true"
+            export GITHUB_WORKFLOW="${{ github.workflow }}"
+            export GITHUB_RUN_ID="${{ github.run_id }}"
+            export GITHUB_REPOSITORY="${{ github.repository }}"
+            
             # 记录：执行时间、命令参数、系统调用、控制台输出
             echo "执行时间: $(date -u)" > "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/执行信息.txt"
             echo "执行命令: ./setup.bin" >> "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/执行信息.txt"
+            echo "环境变量: GITHUB_ACTIONS=true, GITHUB_WORKFLOW=${{ github.workflow }}" >> "${{ env.MONITOR_DIR }}/setup_bin/执行命令日志/执行信息.txt"
             
             # strace详细记录所有系统调用（重点跟踪execve即执行的命令）
             sudo strace -f -tt -T -v -e trace=execve,openat,write \
@@ -340,9 +347,17 @@ jobs:
                   exit 1
                 fi
                 
+                # 关键修复：设置GitHub Actions环境变量，绕过环境检测
+                export GITHUB_ACTIONS="true"
+                export GITHUB_WORKFLOW="${{ github.workflow }}"
+                export GITHUB_RUN_ID="${{ github.run_id }}"
+                export GITHUB_REPOSITORY="${{ github.repository }}"
+                export CI="true"  # 增加CI环境变量，强化环境伪装
+                
                 # 记录执行元信息
                 echo "执行时间: $(date -u)" > "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/执行信息.txt"
                 echo "执行命令: ./main.bin setup_lz4" >> "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/执行信息.txt"
+                echo "环境变量: GITHUB_ACTIONS=true, CI=true" >> "${{ env.MONITOR_DIR }}/main_bin/setup_lz4/执行命令日志/执行信息.txt"
                 
                 # 详细跟踪系统调用和输出
                 sudo strace -f -tt -T -v -e trace=execve,openat,write \
@@ -409,10 +424,18 @@ jobs:
             exit 1
           fi
           
+          # 关键修复：设置GitHub Actions环境变量，绕过环境检测
+          export GITHUB_ACTIONS="true"
+          export GITHUB_WORKFLOW="${{ github.workflow }}"
+          export GITHUB_RUN_ID="${{ github.run_id }}"
+          export GITHUB_REPOSITORY="${{ github.repository }}"
+          export CI="true"  # 增加CI环境变量，强化环境伪装
+          
           # 记录执行元信息
           echo "执行时间: $(date -u)" > "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
           echo "执行命令: ./main.bin setup_gki_config $ENABLE_B" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
           echo "网络调度参数: $ENABLE_B" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
+          echo "环境变量: GITHUB_ACTIONS=true, CI=true" >> "${{ env.MONITOR_DIR }}/main_bin/setup_gki_config/执行命令日志/执行信息.txt"
           
           # 详细跟踪系统调用和输出
           sudo strace -f -tt -T -v -e trace=execve,openat,write \
