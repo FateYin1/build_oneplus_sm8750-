@@ -64,21 +64,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 初始化黑盒追踪目录（按操作节点分类，支持开盒分析）
+      # 初始化黑盒追踪目录
       - name: 📁 初始化黑盒追踪目录（支持开盒）
         run: |
           TRACE_DIR="${GITHUB_WORKSPACE}/黑盒追踪_开盒专用_${{ github.event.inputs.REPO_MANIFEST }}"
           mkdir -p "$TRACE_DIR"
-          # LZ4相关：记录main.bin setup_lz4的操作
           mkdir -p "$TRACE_DIR/LZ4/源码同步后"
           mkdir -p "$TRACE_DIR/LZ4/main.bin处理后"
-          # Config相关：记录setup.bin + main.bin的配置修改
           mkdir -p "$TRACE_DIR/Config/setup.bin执行前"
           mkdir -p "$TRACE_DIR/Config/setup.bin执行后"
           mkdir -p "$TRACE_DIR/Config/main.bin处理后"
-          # 差异日志：统一存放所有diff
           mkdir -p "$TRACE_DIR/差异日志"
-          # 黑盒执行日志：记录黑盒程序输出
           mkdir -p "$TRACE_DIR/黑盒执行日志"
           
           echo "TRACE_DIR=$TRACE_DIR" >> $GITHUB_ENV
@@ -246,7 +242,7 @@ jobs:
          rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
          
-         # 黑盒追踪1：备份源码同步后的原始LZ4
+         # 备份源码同步后的原始LZ4
          LZ4_RAW_PATH="./kernel_platform/common/lib/lz4"
          if [ -d "$LZ4_RAW_PATH" ]; then
            cp -r --update=none "$LZ4_RAW_PATH" "${{ env.TRACE_DIR }}/LZ4/源码同步后/"
@@ -259,7 +255,7 @@ jobs:
             mkdir -p kernel_workspace/kernel_platform
             cd kernel_workspace/kernel_platform
             
-            # 黑盒追踪2：备份setup.bin执行前的Config
+            # 备份setup.bin执行前的Config
             CONFIG_PRE_SETUP="./common/arch/arm64/configs"
             if [ -d "$CONFIG_PRE_SETUP" ]; then
               cp -r --update=none "$CONFIG_PRE_SETUP" "${{ env.TRACE_DIR }}/Config/setup.bin执行前/"
@@ -283,10 +279,9 @@ jobs:
             ./setup.bin >> "${{ env.TRACE_DIR }}/黑盒执行日志/setup.bin_执行日志.txt" 2>&1
             echo "=== setup.bin退出码：$? ===" >> "${{ env.TRACE_DIR }}/黑盒执行日志/setup.bin_执行日志.txt"
             
-            # 黑盒追踪3：备份setup.bin执行后的Config
+            # 备份setup.bin执行后的Config
             if [ -d "$CONFIG_PRE_SETUP" ]; then
               cp -r --update=none "$CONFIG_PRE_SETUP" "${{ env.TRACE_DIR }}/Config/setup.bin执行后/"
-              # 生成setup.bin对Config的修改diff
               diff -urN "${{ env.TRACE_DIR }}/Config/setup.bin执行前" "$CONFIG_PRE_SETUP" > "${{ env.TRACE_DIR }}/差异日志/setup.bin_Config修改.diff" 2>/dev/null
               echo "✅ 已备份setup.bin执行后的Config"
             fi
@@ -304,95 +299,127 @@ jobs:
             echo "⚠️ 未找到目标标识文件，继续执行"
           fi
 
-      - name: 🔧 Set up SUSFS (配置SUSFS，修复补丁冲突)
+      - name: 🔧 Set up SUSFS (配置SUSFS，修复克隆和补丁冲突)
         run: |
-           cd kernel_workspace
-            git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
-            git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
-            
-            cd kernel_platform        
-            cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
-            cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
-            cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-            
-            cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./common/include/linux
-            cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./common/lib
-            cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./common/crypto
-            cp -r ../SukiSU_patch/other/zram/lz4k_oplus ./common/lib/
-            if [ "$DEVICES_NAME" = "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "oneplus_13t" ]; then
-            sed -i 's/^\(SUBLEVEL[[:space:]]*=[[:space:]]*\).*/\166/' ./common/Makefile
+          # 关键修复：添加仓库克隆重试机制和错误日志
+          cd kernel_workspace
+          
+          # 克隆susfs4ksu（带重试和日志）
+          echo "开始克隆susfs4ksu仓库..."
+          CLONE_RETRIES=3
+          CLONE_DELAY=5
+          for ((i=1; i<=CLONE_RETRIES; i++)); do
+            if git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6; then
+              echo "✅ susfs4ksu克隆成功"
+              break
+            else
+              echo "❌ 第$i次克隆susfs4ksu失败，$CLONE_DELAY秒后重试..."
+              sleep $CLONE_DELAY
+              if [ $i -eq $CLONE_RETRIES ]; then
+                echo "::error ::超过最大重试次数，susfs4ksu克隆失败"
+                exit 1
+              fi
             fi
-            
-            cd ./common
-            if [ "$DEVICES_NAME" != "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "realme_GT7" ]; then
-                # 删除旧LZ4文件
-                files=(
-                    "lib/lz4/lz4_compress.c"
-                    "lib/lz4/lz4_decompress.c"
-                    "lib/lz4/lz4defs.h"
-                    "lib/lz4/lz4hc_compress.c"
-                )
-                for file in "${files[@]}"; do
-                    if [ -e "$file" ]; then
-                        rm "$file"
-                    fi
-                done
-            
-                # 执行main.bin并记录日志（黑盒追踪）
-                cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
-                chmod +x main.bin
-                echo "=== main.bin(setup_lz4)执行日志 ===" > "${{ env.TRACE_DIR }}/黑盒执行日志/main.bin_setup_lz4_执行日志.txt"
-                ./main.bin "setup_lz4" >> "${{ env.TRACE_DIR }}/黑盒执行日志/main.bin_setup_lz4_执行日志.txt" 2>&1
-                echo "=== main.bin退出码：$? ===" >> "${{ env.TRACE_DIR }}/黑盒执行日志/main.bin_setup_lz4_执行日志.txt"
-                rm -rf ./main.bin
-
-                # 黑盒追踪4：备份main.bin处理后的LZ4
-                LZ4_AFTER="./lib/lz4"
-                if [ -d "$LZ4_AFTER" ]; then
-                  cp -r --update=none "$LZ4_AFTER" "${{ env.TRACE_DIR }}/LZ4/main.bin处理后/"
-                  ls -la "$LZ4_AFTER" > "${{ env.TRACE_DIR }}/LZ4/main.bin处理后_文件列表.txt"
-                  # 生成LZ4修改diff（用于开盒）
-                  if [ -d "${{ env.TRACE_DIR }}/LZ4/源码同步后/lz4" ]; then
-                    diff -urN "${{ env.TRACE_DIR }}/LZ4/源码同步后/lz4" "$LZ4_AFTER" > "${{ env.TRACE_DIR }}/差异日志/main.bin_LZ4修改.diff" 2>/dev/null
+          done
+          
+          # 克隆SukiSU_patch（带重试和日志）
+          echo "开始克隆SukiSU_patch仓库..."
+          for ((i=1; i<=CLONE_RETRIES; i++)); do
+            if git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git; then
+              echo "✅ SukiSU_patch克隆成功"
+              break
+            else
+              echo "❌ 第$i次克隆SukiSU_patch失败，$CLONE_DELAY秒后重试..."
+              sleep $CLONE_DELAY
+              if [ $i -eq $CLONE_RETRIES ]; then
+                echo "::error ::超过最大重试次数，SukiSU_patch克隆失败"
+                exit 1
+              fi
+            fi
+          done
+          
+          # 后续配置步骤（保持不变）
+          cd kernel_platform        
+          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
+          cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
+          cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+          
+          cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./common/include/linux
+          cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./common/lib
+          cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./common/crypto
+          cp -r ../SukiSU_patch/other/zram/lz4k_oplus ./common/lib/
+          if [ "$DEVICES_NAME" = "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "oneplus_13t" ]; then
+          sed -i 's/^\(SUBLEVEL[[:space:]]*=[[:space:]]*\).*/\166/' ./common/Makefile
+          fi
+          
+          cd ./common
+          if [ "$DEVICES_NAME" != "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "realme_GT7" ]; then
+              # 删除旧LZ4文件
+              files=(
+                  "lib/lz4/lz4_compress.c"
+                  "lib/lz4/lz4_decompress.c"
+                  "lib/lz4/lz4defs.h"
+                  "lib/lz4/lz4hc_compress.c"
+              )
+              for file in "${files[@]}"; do
+                  if [ -e "$file" ]; then
+                      rm "$file"
                   fi
-                  echo "✅ 已备份main.bin处理后的LZ4"
+              done
+          
+              # 执行main.bin并记录日志
+              cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
+              chmod +x main.bin
+              echo "=== main.bin(setup_lz4)执行日志 ===" > "${{ env.TRACE_DIR }}/黑盒执行日志/main.bin_setup_lz4_执行日志.txt"
+              ./main.bin "setup_lz4" >> "${{ env.TRACE_DIR }}/黑盒执行日志/main.bin_setup_lz4_执行日志.txt" 2>&1
+              echo "=== main.bin退出码：$? ===" >> "${{ env.TRACE_DIR }}/黑盒执行日志/main.bin_setup_lz4_执行日志.txt"
+              rm -rf ./main.bin
+
+              # 备份main.bin处理后的LZ4
+              LZ4_AFTER="./lib/lz4"
+              if [ -d "$LZ4_AFTER" ]; then
+                cp -r --update=none "$LZ4_AFTER" "${{ env.TRACE_DIR }}/LZ4/main.bin处理后/"
+                ls -la "$LZ4_AFTER" > "${{ env.TRACE_DIR }}/LZ4/main.bin处理后_文件列表.txt"
+                if [ -d "${{ env.TRACE_DIR }}/LZ4/源码同步后/lz4" ]; then
+                  diff -urN "${{ env.TRACE_DIR }}/LZ4/源码同步后/lz4" "$LZ4_AFTER" > "${{ env.TRACE_DIR }}/差异日志/main.bin_LZ4修改.diff" 2>/dev/null
                 fi
-            fi
-            
-            # 修复realme机型补丁冲突
-            if [ "${REPO_MANIFEST}" = "realme_GT7pro_Speed" ] || [ "${REPO_MANIFEST}" = "realme_GT7pro" ]; then
-                sed -i 's/-32,12 +32,38/-32,11 +32,37/g' 50_add_susfs_in_gki-android15-6.6.patch
-                sed -i '/#include <trace\/hooks\/fs.h>/d' 50_add_susfs_in_gki-android15-6.6.patch
-            fi
-            
-            # 关键修复：删除f2fs Makefile中的重复行
-            TARGET_FILE="./fs/f2fs/Makefile"
-            CONFLICT_LINE="f2fs-\$(CONFIG_F2FS_IOSTAT) += iostat.o"
-            if [ -f "$TARGET_FILE" ] && grep -qxF "$CONFLICT_LINE" "$TARGET_FILE"; then
-              echo "发现重复行，删除: $CONFLICT_LINE"
-              sed -i "/^$CONFLICT_LINE$/d" "$TARGET_FILE"
-              # 记录冲突修复操作
-              echo "已删除重复行: $CONFLICT_LINE" >> "${{ env.TRACE_DIR }}/差异日志/SUSFS补丁冲突修复记录.txt"
-            fi
-            
-            # 应用SUSFS补丁
-            echo "开始应用SUSFS补丁..."
-            patch -p1 --verbose < 50_add_susfs_in_gki-android15-6.6.patch
-            if [ $? -ne 0 ]; then
-              echo "::error ::SUSFS补丁应用失败！"
-              exit 1
-            fi
-            
-            # 应用syscall_hooks补丁
-            cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./
-            echo "开始应用syscall_hooks补丁..."
-            patch -p1 -F 3 --verbose < syscall_hooks.patch
-            if [ $? -ne 0 ]; then
-              echo "::error ::syscall_hooks补丁应用失败！"
-              exit 1
-            fi
-            
-            echo "SUSFS配置完成"
+                echo "✅ 已备份main.bin处理后的LZ4"
+              fi
+          fi
+          
+          # 修复realme机型补丁冲突
+          if [ "${REPO_MANIFEST}" = "realme_GT7pro_Speed" ] || [ "${REPO_MANIFEST}" = "realme_GT7pro" ]; then
+              sed -i 's/-32,12 +32,38/-32,11 +32,37/g' 50_add_susfs_in_gki-android15-6.6.patch
+              sed -i '/#include <trace\/hooks\/fs.h>/d' 50_add_susfs_in_gki-android15-6.6.patch
+          fi
+          
+          # 修复f2fs Makefile重复行冲突
+          TARGET_FILE="./fs/f2fs/Makefile"
+          CONFLICT_LINE="f2fs-\$(CONFIG_F2FS_IOSTAT) += iostat.o"
+          if [ -f "$TARGET_FILE" ] && grep -qxF "$CONFLICT_LINE" "$TARGET_FILE"; then
+            echo "发现重复行，删除: $CONFLICT_LINE"
+            sed -i "/^$CONFLICT_LINE$/d" "$TARGET_FILE"
+            echo "已删除重复行: $CONFLICT_LINE" >> "${{ env.TRACE_DIR }}/差异日志/SUSFS补丁冲突修复记录.txt"
+          fi
+          
+          # 应用SUSFS补丁
+          echo "开始应用SUSFS补丁..."
+          patch -p1 --verbose < 50_add_susfs_in_gki-android15-6.6.patch
+          if [ $? -ne 0 ]; then
+            echo "::error ::SUSFS补丁应用失败！"
+            exit 1
+          fi
+          
+          # 应用syscall_hooks补丁
+          cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./
+          echo "开始应用syscall_hooks补丁..."
+          patch -p1 -F 3 --verbose < syscall_hooks.patch
+          if [ $? -ne 0 ]; then
+            echo "::error ::syscall_hooks补丁应用失败！"
+            exit 1
+          fi
+          
+          echo "SUSFS配置完成"
 
       - name: 🔧 Cache HMBird patch (缓存HMBird补丁)
         uses: actions/cache@v3
@@ -432,13 +459,11 @@ jobs:
           echo "=== main.bin退出码：$? ===" >> "${{ env.TRACE_DIR }}/黑盒执行日志/main.bin_setup_gki_执行日志.txt"
           rm -rf ./main.bin
 
-          # 黑盒追踪5：备份main.bin处理后的Config
+          # 备份main.bin处理后的Config
           CONFIG_PATH="./common/arch/arm64/configs"
           if [ -d "$CONFIG_PATH" ]; then
             cp -r --update=none "$CONFIG_PATH" "${{ env.TRACE_DIR }}/Config/main.bin处理后/"
-            # 生成main.bin对Config的修改diff
             diff -urN "${{ env.TRACE_DIR }}/Config/setup.bin执行后" "$CONFIG_PATH" > "${{ env.TRACE_DIR }}/差异日志/main.bin_Config修改.diff" 2>/dev/null
-            # 单独生成gki_defconfig的diff（关键配置）
             if [ -f "${{ env.TRACE_DIR }}/Config/setup.bin执行后/gki_defconfig" ] && [ -f "$CONFIG_PATH/gki_defconfig" ]; then
               diff -u "${{ env.TRACE_DIR }}/Config/setup.bin执行后/gki_defconfig" "$CONFIG_PATH/gki_defconfig" > "${{ env.TRACE_DIR }}/差异日志/main.bin_gki_defconfig修改.diff" 2>/dev/null
             fi
