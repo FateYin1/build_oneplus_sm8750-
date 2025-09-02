@@ -1,4 +1,4 @@
-name: Build_oneplus_sm87
+name: Build_oneplus_sm81
 on:
   workflow_dispatch:
     inputs:
@@ -67,10 +67,8 @@ jobs:
       # 初始化备份目录（设在源码外，避免污染）
       - name: 📁 初始化备份目录
         run: |
-          # 备份目录设在工作区根目录，与源码目录完全隔离
           BACKUP_DIR="${GITHUB_WORKSPACE}/黑盒追踪_${{ github.event.inputs.REPO_MANIFEST }}"
           mkdir -p "$BACKUP_DIR"
-          # 子目录：分别存储各阶段文件
           mkdir -p "$BACKUP_DIR/lz4_源码同步后"
           mkdir -p "$BACKUP_DIR/lz4_黑盒处理后"
           mkdir -p "$BACKUP_DIR/config_原始状态"
@@ -240,11 +238,10 @@ jobs:
          rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
          
-         # 备份源码同步后的lz4目录（黑盒操作前，此时文件未被修改）
+         # 替换 cp -rn 为 cp -r --update=none 消除警告
          LZ4_PATH="./kernel_platform/common/lib/lz4"
          if [ -d "$LZ4_PATH" ]; then
-           # 用-r 递归复制整个目录，-n 避免覆盖（安全操作）
-           cp -rn "$LZ4_PATH" "${{ env.BACKUP_DIR }}/lz4_源码同步后/"
+           cp -r --update=none "$LZ4_PATH" "${{ env.BACKUP_DIR }}/lz4_源码同步后/"
          fi
          
       - name: ⚙️ Set SuKiSU Ultra (设置SuKiSU Ultra)
@@ -282,10 +279,9 @@ jobs:
         run: |
           cd kernel_workspace/kernel_platform
           CONFIG_PATH="./common/arch/arm64/configs"
-          # 备份原始配置文件（黑盒修改前的状态）
           if [ -d "$CONFIG_PATH" ]; then
-            # -rn：递归+不覆盖，确保只复制一次，避免干扰
-            cp -rn "$CONFIG_PATH" "${{ env.BACKUP_DIR }}/config_原始状态/"
+            # 替换 cp -rn 为 cp -r --update=none 消除警告
+            cp -r --update=none "$CONFIG_PATH" "${{ env.BACKUP_DIR }}/config_原始状态/"
           fi
 
       - name: 🔧 Set up SUSFS (配置 SUSFS)
@@ -321,31 +317,42 @@ jobs:
                     fi
                 done
             
-                # 执行黑盒操作（修改lz4文件）
                 cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
                 chmod +x main.bin
                 ./main.bin "setup_lz4"
                 rm -rf ./main.bin
 
-                # 黑盒操作完成后，备份修改后的lz4目录
+                # 替换 cp -rn 为 cp -r --update=none 消除警告
                 LZ4_AFTER="./lib/lz4"
                 if [ -d "$LZ4_AFTER" ]; then
-                  cp -rn "$LZ4_AFTER" "${{ env.BACKUP_DIR }}/lz4_黑盒处理后/"
-                  # 生成lz4差异日志
+                  cp -r --update=none "$LZ4_AFTER" "${{ env.BACKUP_DIR }}/lz4_黑盒处理后/"
                   if [ -d "${{ env.BACKUP_DIR }}/lz4_源码同步后/lz4" ]; then
                     diff -urN "${{ env.BACKUP_DIR }}/lz4_源码同步后/lz4" "$LZ4_AFTER" > "${{ env.BACKUP_DIR }}/差异日志/lz4差异.diff" 2>/dev/null
                   fi
                 fi
             fi
             
-            if [ "${REPO_MANIFEST}" = "realme_GT7pro_Speed" ] && [ "${REPO_MANIFEST}" = "realme_GT7pro" ]; then
+            # 修复realme机型补丁冲突（原逻辑保留）
+            if [ "${REPO_MANIFEST}" = "realme_GT7pro_Speed" ] || [ "${REPO_MANIFEST}" = "realme_GT7pro" ]; then
                 sed -i 's/-32,12 +32,38/-32,11 +32,37/g' 50_add_susfs_in_gki-android15-6.6.patch
                 sed -i '/#include <trace\/hooks\/fs.h>/d' 50_add_susfs_in_gki-android15-6.6.patch
             fi
             
-            patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || true
+            # 关键修改：移除 || true，添加 --verbose 显示详细补丁冲突
+            echo "开始应用SUSFS补丁..."
+            patch -p1 --verbose < 50_add_susfs_in_gki-android15-6.6.patch
+            if [ $? -ne 0 ]; then
+              echo "::error ::SUSFS补丁应用失败！"
+              exit 1
+            fi
+            
             cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./
-            patch -p1 -F 3 < syscall_hooks.patch
+            echo "开始应用syscall_hooks补丁..."
+            patch -p1 -F 3 --verbose < syscall_hooks.patch
+            if [ $? -ne 0 ]; then
+              echo "::error ::syscall_hooks补丁应用失败！"
+              exit 1
+            fi
             
             echo "完成"
 
@@ -379,27 +386,23 @@ jobs:
         run: |
           cd kernel_workspace/kernel_platform
           
-          # 执行黑盒修改配置（setup_gki_config）
           cp "${GITHUB_WORKSPACE}/.github/workflows/Bin/main.bin" ./
           chmod +x main.bin
           ./main.bin "setup_gki_config" "$ENABLE_B"
-          rm -rf ./main.bin  # 确保黑盒完全执行并删除，释放文件
+          rm -rf ./main.bin
 
-          # 黑盒操作完成后，备份修改后的配置文件
           CONFIG_PATH="./common/arch/arm64/configs"
           if [ -d "$CONFIG_PATH" ]; then
-            cp -rn "$CONFIG_PATH" "${{ env.BACKUP_DIR }}/config_黑盒处理后/"
-            # 生成配置差异日志（原始状态 vs 黑盒处理后）
+            # 替换 cp -rn 为 cp -r --update=none 消除警告
+            cp -r --update=none "$CONFIG_PATH" "${{ env.BACKUP_DIR }}/config_黑盒处理后/"
             if [ -d "${{ env.BACKUP_DIR }}/config_原始状态/configs" ]; then
               diff -urN "${{ env.BACKUP_DIR }}/config_原始状态/configs" "$CONFIG_PATH" > "${{ env.BACKUP_DIR }}/差异日志/配置差异.diff" 2>/dev/null
-              # 单独对比核心配置文件
               if [ -f "${{ env.BACKUP_DIR }}/config_原始状态/configs/gki_defconfig" ] && [ -f "$CONFIG_PATH/gki_defconfig" ]; then
                 diff -u "${{ env.BACKUP_DIR }}/config_原始状态/configs/gki_defconfig" "$CONFIG_PATH/gki_defconfig" > "${{ env.BACKUP_DIR }}/差异日志/gki_defconfig差异.diff" 2>/dev/null
               fi
             fi
           fi
 
-          # 原逻辑不变
           sudo sed -i 's/check_defconfig//' ./common/build.config.gki
           cd common
           git add -A && git commit -a -m "BUILD Kernel"
@@ -507,7 +510,6 @@ jobs:
             fi
           fi
 
-      # 上传所有备份和差异日志
       - name: 📤 上传黑盒追踪数据
         uses: actions/upload-artifact@v4
         with:
