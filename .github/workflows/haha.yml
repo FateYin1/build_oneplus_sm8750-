@@ -1,4 +1,4 @@
-name: Build_oneplus_sm8750
+name: Build_oneplus_sm87
 on:
   workflow_dispatch:
     inputs:
@@ -53,7 +53,7 @@ on:
       
       KSU_BRANCH:
         type: choice
-        description: "KSU源码分支（不影响版本显示）"
+        description: "KSU源码分支"
         required: true
         default: "susfs-main"
         options:
@@ -235,7 +235,7 @@ jobs:
          rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
          
-      - name: ⚙️ Set SukiSU Ultra (优化版本显示)
+      - name: ⚙️ Set SukiSU Ultra (版本计算修复)
         run: |
           mkdir -p kernel_workspace/kernel_platform
           cd kernel_workspace/kernel_platform
@@ -244,7 +244,7 @@ jobs:
           CUSTOM_TAG="${{ github.event.inputs.KSU_META }}"
           echo "使用KSU分支: $BRANCH_NAME，显示标识: $CUSTOM_TAG"
           
-          git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git -b $BRANCH_NAME --depth=1
+          git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git -b $BRANCH_NAME
           mv SukiSU-Ultra KernelSU
           cd KernelSU
           
@@ -254,6 +254,18 @@ jobs:
             KSU_API_VERSION="3.1.9"
           fi
           
+          COMMIT_COUNT=$(git rev-list --count $BRANCH_NAME 2>/dev/null)
+          if [ -z "$COMMIT_COUNT" ] || [ "$COMMIT_COUNT" -eq 0 ]; then
+            echo "⚠️ 提交数获取失败，使用默认值 3000"
+            COMMIT_COUNT=3000
+          fi
+          KSU_VERSION=$((COMMIT_COUNT + 10700))
+          echo "分支提交数: $COMMIT_COUNT，计算后KSU版本: $KSU_VERSION"
+          if [ "$KSU_VERSION" -lt 10700 ]; then
+            echo "⚠️ 版本异常，强制设为 10701"
+            KSU_VERSION=10701
+          fi
+          
           GIT_HASH=$(git rev-parse --short HEAD)
           VERSION_FULL="v$KSU_API_VERSION-$CUSTOM_TAG[$GIT_HASH]"
           echo "生成版本标识: $VERSION_FULL"
@@ -261,12 +273,74 @@ jobs:
           sed -i "/^KSU_VERSION_API :=/c\KSU_VERSION_API := $KSU_API_VERSION" kernel/Makefile
           sed -i "/^KSU_VERSION_FULL :=/c\KSU_VERSION_FULL := $VERSION_FULL" kernel/Makefile
           
-          KSU_VERSION=$(expr $(git rev-list --count $BRANCH_NAME 2>/dev/null || echo 13000) + 10700)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+          echo "已设置环境变量 KSUVER: $KSUVER"
 
-      - name: 🔧 Set up SUSFS (配置 SUSFS)
+      - name: 🔧 替换LZ4为1.10.0官方版本（避免补丁冲突）
         run: |
-            cd kernel_workspace
+          # 定义内核中LZ4目录路径
+          LZ4_KERNEL_DIR="kernel_workspace/kernel_platform/common/lib/lz4"
+          mkdir -p "$LZ4_KERNEL_DIR"
+          
+          # 克隆LZ4官方仓库并切换到1.10.0版本
+          git clone https://github.com/lz4/lz4.git -b v1.10.0 --depth=1
+          cd lz4/lib
+          
+          # 复制核心文件到内核目录（替换原有文件）
+          echo "替换内核中的LZ4文件为1.10.0版本..."
+          cp lz4.c lz4.h "$LZ4_KERNEL_DIR/"
+          cp lz4_compress.c lz4_decompress.c "$LZ4_KERNEL_DIR/"
+          cp lz4hc.c lz4hc_compress.c "$LZ4_KERNEL_DIR/"
+          cp lz4frame.c lz4frame.h "$LZ4_KERNEL_DIR/"  # 完整引入帧格式支持
+          cp lz4defs.h "$LZ4_KERNEL_DIR/"  # 宏定义头文件
+          
+          # 验证文件替换结果
+          echo "验证替换后的文件列表："
+          ls -l "$LZ4_KERNEL_DIR"
+          
+          # 返回工作目录
+          cd ../..
+
+      - name: 🔧 完善LZ4 Makefile（支持1.10.0完整编译）
+        run: |
+          LZ4_MAKEFILE="kernel_workspace/kernel_platform/common/lib/lz4/Makefile"
+          
+          # 如果Makefile不存在则创建
+          if [ ! -f "$LZ4_MAKEFILE" ]; then
+              echo "创建新的LZ4 Makefile: $LZ4_MAKEFILE"
+              echo "# SPDX-License-Identifier: GPL-2.0-only" > "$LZ4_MAKEFILE"
+              echo "ccflags-y += -O3" >> "$LZ4_MAKEFILE"
+          fi
+          
+          # 添加所有1.10.0文件的编译规则
+          echo "完善LZ4 Makefile编译规则..."
+          # 通用库文件
+          if ! grep -q "obj-$(CONFIG_LZ4) += lz4.o" "$LZ4_MAKEFILE"; then
+              sed -i '/^ccflags-y/a obj-$(CONFIG_LZ4) += lz4.o' "$LZ4_MAKEFILE"
+          fi
+          # 压缩/解压核心
+          if ! grep -q "obj-$(CONFIG_LZ4_COMPRESS) += lz4_compress.o" "$LZ4_MAKEFILE"; then
+              echo "obj-$(CONFIG_LZ4_COMPRESS) += lz4_compress.o" >> "$LZ4_MAKEFILE"
+          fi
+          if ! grep -q "obj-$(CONFIG_LZ4_DECOMPRESS) += lz4_decompress.o" "$LZ4_MAKEFILE"; then
+              echo "obj-$(CONFIG_LZ4_DECOMPRESS) += lz4_decompress.o" >> "$LZ4_MAKEFILE"
+          fi
+          # 高压缩率模式
+          if ! grep -q "obj-$(CONFIG_LZ4HC_COMPRESS) += lz4hc.o lz4hc_compress.o" "$LZ4_MAKEFILE"; then
+              echo "obj-$(CONFIG_LZ4HC_COMPRESS) += lz4hc.o lz4hc_compress.o" >> "$LZ4_MAKEFILE"
+          fi
+          # 帧格式支持
+          if ! grep -q "obj-$(CONFIG_LZ4_FRAME) += lz4frame.o" "$LZ4_MAKEFILE"; then
+              echo "obj-$(CONFIG_LZ4_FRAME) += lz4frame.o" >> "$LZ4_MAKEFILE"
+          fi
+          
+          # 显示最终Makefile内容
+          echo "最终LZ4 Makefile内容："
+          cat "$LZ4_MAKEFILE"
+
+      - name: 🔧 Set up SUSFS（配置SUSFS，不涉及LZ4补丁）
+        run: |
+           cd kernel_workspace
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
             git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
             
@@ -284,45 +358,7 @@ jobs:
               sed -i 's/^\(SUBLEVEL[[:space:]]*=[[:space:]]*\).*/\166/' ./common/Makefile
             fi
             
-            # 应用补丁核心逻辑
             cd ./common
-            if [ "$DEVICES_NAME" != "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "realme_GT7" ]; then
-                # 下载lz4官方版本对比补丁（v1.9.4→v1.10.0）
-                LZ4_PATCH_URL="https://github.com/lz4/lz4/compare/v1.9.4...v1.10.0.patch"
-                LZ4_PATCH_FILE="lz4_1.9.4_to_1.10.0_official.patch"
-                
-                echo "正在下载lz4官方补丁: $LZ4_PATCH_URL"
-                curl -fSL -o "$LZ4_PATCH_FILE" "$LZ4_PATCH_URL"
-                if [ $? -ne 0 ] || [ ! -s "$LZ4_PATCH_FILE" ]; then
-                    echo "::error ::lz4补丁下载失败"
-                    exit 1
-                fi
-                
-                # 调整补丁路径以匹配内核源码结构
-                echo "调整补丁路径，适配内核目录结构..."
-                sed -i \
-                    -e 's|diff --git a/lib/|diff --git a/lib/lz4/|g' \
-                    -e 's|diff --git b/lib/|diff --git b/lib/lz4/|g' \
-                    -e 's|--- a/lib/|--- a/lib/lz4/|g' \
-                    -e 's|+++ b/lib/|+++ b/lib/lz4/|g' \
-                    "$LZ4_PATCH_FILE"
-                
-                # 关键修复：添加--分隔符，避免grep将---识别为选项
-                echo "验证补丁路径调整结果..."
-                if ! grep -q -- "--- a/lib/lz4/lz4.c" "$LZ4_PATCH_FILE"; then
-                    echo "::error ::补丁路径调整失败，未找到预期路径"
-                    cat "$LZ4_PATCH_FILE" | head -n 20  # 输出前20行用于调试
-                    exit 1
-                fi
-                
-                # 应用调整后的补丁
-                echo "正在应用调整后的lz4补丁"
-                patch -p1 < "$LZ4_PATCH_FILE" || echo "⚠️ lz4补丁部分应用差异"
-                
-                # 清理补丁文件
-                rm -f "$LZ4_PATCH_FILE"
-            fi
-            
             # 修复realme机型逻辑判断
             if [ "${REPO_MANIFEST}" = "realme_GT7pro_Speed" ] || [ "${REPO_MANIFEST}" = "realme_GT7pro" ]; then
                 echo "适配realme机型，调整SUSFS补丁"
@@ -341,31 +377,7 @@ jobs:
             
             echo "✅ SUSFS配置完成"
 
-      - name: 🔧 Cache HMBird patch
-        uses: actions/cache@v3
-        with:
-          path: ${{ runner.temp }}/hmbird_patch.c
-          key: hmbird-patch-v1
-          restore-keys: |
-            hmbird-patch-v1
-            
-      - name: 🔧 Apply HMBird GKI patch
-        run: |
-          PATCH_FILE="${{ runner.temp }}/hmbird_patch.c"
-          if [ ! -f "$PATCH_FILE" ]; then
-            echo "下载HMBird补丁..."
-            cp "${GITHUB_WORKSPACE}/hmbird_patch.c" "$PATCH_FILE"
-          fi
-          
-          cd kernel_workspace/kernel_platform/common/drivers
-          cp "$PATCH_FILE" hmbird_patch.c
-          
-          if ! grep -q "hmbird_patch.o" Makefile; then
-            echo "obj-y += hmbird_patch.o" >> Makefile
-          fi
-          echo "HMBird补丁应用完成"
-
-      - name: 🔧 Set gki_defconfig (设置编译配置)
+      - name: 🔧 Set gki_defconfig（启用完整LZ4配置）
         run: |
           cd kernel_workspace/kernel_platform
           DEFCONFIG="./common/arch/arm64/configs/gki_defconfig"
@@ -382,14 +394,19 @@ jobs:
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$DEFCONFIG"
           echo "CONFIG_KPM=y" >> "$DEFCONFIG"
           
-          # 压缩算法配置
-          echo "添加压缩算法配置"
+          # LZ4 1.10.0完整配置
+          echo "添加完整LZ4配置"
+          echo "CONFIG_LZ4=y" >> "$DEFCONFIG"
+          echo "CONFIG_LZ4_COMPRESS=y" >> "$DEFCONFIG"
+          echo "CONFIG_LZ4HC_COMPRESS=y" >> "$DEFCONFIG"
+          echo "CONFIG_LZ4_DECOMPRESS=y" >> "$DEFCONFIG"
+          echo "CONFIG_LZ4_FRAME=y" >> "$DEFCONFIG"
           echo "CONFIG_CRYPTO_LZ4=y" >> "$DEFCONFIG"
           echo "CONFIG_CRYPTO_LZ4HC=y" >> "$DEFCONFIG"
           echo "CONFIG_CRYPTO_LZ4KD=y" >> "$DEFCONFIG"
           echo "CONFIG_CRYPTO_ZSTD=y" >> "$DEFCONFIG"
           
-          # F2FS配置
+          # F2FS压缩配置
           echo "CONFIG_F2FS_FS_COMPRESSION=y" >> "$DEFCONFIG"
           echo "CONFIG_F2FS_FS_LZ4=y" >> "$DEFCONFIG"
           echo "CONFIG_F2FS_FS_LZ4HC=y" >> "$DEFCONFIG"
@@ -415,7 +432,6 @@ jobs:
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
           
           # 移除check_defconfig检查
-          echo "移除check_defconfig检查"
           sed -i 's/check_defconfig//g' ./common/build.config.gki
 
       - name: 🔧 Set Kernel name
@@ -522,3 +538,4 @@ jobs:
         with:
           name: AK3_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_SuKiSU${{ github.event.inputs.KPM == 'true' && '_KPM' || '' }}${{ github.event.inputs.enable_feature_z == 'true' && '_SCHED' || '' }}
           path: ./AnyKernel3/*
+    
