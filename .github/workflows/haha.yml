@@ -1,4 +1,4 @@
-name: Build_oneplus_sm87
+name: Build_oneplus_sm8750
 on:
   workflow_dispatch:
     inputs:
@@ -38,15 +38,6 @@ on:
         required: false
         default: true
         type: boolean
-
-      enable_feature_b:
-         description: "选择网络调度"
-         required: false
-         type: choice
-         options:
-            - 'FQ_CODEL'
-            - 'BBR'
-         default: 'FQ_CODEL'
       
       KPM:
         type: boolean
@@ -54,14 +45,12 @@ on:
         required: true
         default: true
 
-      # 自定义版本标识（仅显示用）
       KSU_META:
         type: string
         description: "自定义版本标识（例如：酷安Fate007）"
         required: true
         default: "酷安Fate007"
       
-      # KSU源码分支（内部使用，不显示在版本中）
       KSU_BRANCH:
         type: choice
         description: "KSU源码分支（不影响版本显示）"
@@ -251,35 +240,27 @@ jobs:
           mkdir -p kernel_workspace/kernel_platform
           cd kernel_workspace/kernel_platform
           
-          # 提取参数
           BRANCH_NAME="${{ github.event.inputs.KSU_BRANCH }}"
           CUSTOM_TAG="${{ github.event.inputs.KSU_META }}"
           echo "使用KSU分支: $BRANCH_NAME，显示标识: $CUSTOM_TAG"
           
-          # 拉取SukiSU源码
           git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git -b $BRANCH_NAME --depth=1
           mv SukiSU-Ultra KernelSU
           cd KernelSU
           
-          # 提取API版本
           KSU_API_VERSION=$(grep -m1 "KSU_VERSION_API :=" kernel/Makefile | awk -F'= ' '{print $2}' | tr -d '[:space:]')
           if [ -z "$KSU_API_VERSION" ]; then
             echo "⚠️ 未获取到API版本，使用默认值"
             KSU_API_VERSION="3.1.9"
           fi
           
-          # 获取Git哈希
           GIT_HASH=$(git rev-parse --short HEAD)
-          
-          # 生成版本字符串（格式：v{API}-{自定义}[哈希]）
           VERSION_FULL="v$KSU_API_VERSION-$CUSTOM_TAG[$GIT_HASH]"
           echo "生成版本标识: $VERSION_FULL"
           
-          # 写入Makefile
           sed -i "/^KSU_VERSION_API :=/c\KSU_VERSION_API := $KSU_API_VERSION" kernel/Makefile
           sed -i "/^KSU_VERSION_FULL :=/c\KSU_VERSION_FULL := $VERSION_FULL" kernel/Makefile
           
-          # 计算版本号
           KSU_VERSION=$(expr $(git rev-list --count $BRANCH_NAME 2>/dev/null || echo 13000) + 10700)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
 
@@ -298,33 +279,65 @@ jobs:
             cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./common/lib
             cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./common/crypto
             cp -r ../SukiSU_patch/other/zram/lz4k_oplus ./common/lib/
+            
             if [ "$DEVICES_NAME" = "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "oneplus_13t" ]; then
-            sed -i 's/^\(SUBLEVEL[[:space:]]*=[[:space:]]*\).*/\166/' ./common/Makefile
-            fi
-            # Apply patches
-            cd ./common
-            if [ "$DEVICES_NAME" != "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "realme_GT7" ]; then
-                # 使用预构建的lz4 1.9.4→1.10.0补丁（替换main.bin）
-                # 请将下方URL替换为你实际存放补丁的地址
-                curl -LO https://github.com/SukiSU-Ultra/patches/raw/main/lz4/lz4_1.9.4_to_1.10.0.patch
-                
-                # 应用补丁到内核lz4目录
-                patch -p1 -d ./lib/lz4 < lz4_1.9.4_to_1.10.0.patch
-                
-                # 清理补丁文件
-                rm -f lz4_1.9.4_to_1.10.0.patch
+              sed -i 's/^\(SUBLEVEL[[:space:]]*=[[:space:]]*\).*/\166/' ./common/Makefile
             fi
             
-            if [ "${REPO_MANIFEST}" = "realme_GT7pro_Speed" ] && [ "${REPO_MANIFEST}" = "realme_GT7pro" ]; then
+            # 应用补丁核心逻辑
+            cd ./common
+            if [ "$DEVICES_NAME" != "oneplus_ace5_ultra" ] && [ "${REPO_MANIFEST}" != "realme_GT7" ]; then
+                # 下载lz4官方版本对比补丁（v1.9.4→v1.10.0）
+                LZ4_PATCH_URL="https://github.com/lz4/lz4/compare/v1.9.4...v1.10.0.patch"
+                LZ4_PATCH_FILE="lz4_1.9.4_to_1.10.0_official.patch"
+                
+                echo "正在下载lz4官方补丁: $LZ4_PATCH_URL"
+                curl -fSL -o "$LZ4_PATCH_FILE" "$LZ4_PATCH_URL"
+                if [ $? -ne 0 ] || [ ! -s "$LZ4_PATCH_FILE" ]; then
+                    echo "::error ::lz4补丁下载失败"
+                    exit 1
+                fi
+                
+                # 调整补丁路径以匹配内核源码结构
+                echo "调整补丁路径，适配内核目录结构..."
+                sed -i \
+                    -e 's|diff --git a/lib/|diff --git a/lib/lz4/|g' \
+                    -e 's|diff --git b/lib/|diff --git b/lib/lz4/|g' \
+                    -e 's|--- a/lib/|--- a/lib/lz4/|g' \
+                    -e 's|+++ b/lib/|+++ b/lib/lz4/|g' \
+                    "$LZ4_PATCH_FILE"
+                
+                # 验证路径调整是否生效
+                if ! grep -q "--- a/lib/lz4/lz4.c" "$LZ4_PATCH_FILE"; then
+                    echo "::error ::补丁路径调整失败"
+                    exit 1
+                fi
+                
+                # 应用调整后的补丁
+                echo "正在应用调整后的lz4补丁"
+                patch -p1 < "$LZ4_PATCH_FILE" || echo "⚠️ lz4补丁部分应用差异"
+                
+                # 清理补丁文件
+                rm -f "$LZ4_PATCH_FILE"
+            fi
+            
+            # 修复realme机型逻辑判断
+            if [ "${REPO_MANIFEST}" = "realme_GT7pro_Speed" ] || [ "${REPO_MANIFEST}" = "realme_GT7pro" ]; then
+                echo "适配realme机型，调整SUSFS补丁"
                 sed -i 's/-32,12 +32,38/-32,11 +32,37/g' 50_add_susfs_in_gki-android15-6.6.patch
                 sed -i '/#include <trace\/hooks\/fs.h>/d' 50_add_susfs_in_gki-android15-6.6.patch
             fi
             
-            patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || true
-            cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./
-            patch -p1 -F 3 < syscall_hooks.patch
+            # 应用SUSFS主补丁
+            echo "正在应用SUSFS主补丁"
+            patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || (echo "⚠️ SUSFS主补丁部分差异，强制应用" && patch -p1 -f < 50_add_susfs_in_gki-android15-6.6.patch)
             
-            echo "完成"
+            # 应用系统调用钩子补丁
+            echo "正在应用系统调用钩子补丁"
+            cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./
+            patch -p1 -F 3 < syscall_hooks.patch || echo "⚠️ 系统调用钩子补丁已应用或无需应用"
+            
+            echo "✅ SUSFS配置完成"
 
       - name: 🔧 Cache HMBird patch
         uses: actions/cache@v3
@@ -351,40 +364,37 @@ jobs:
           echo "HMBird补丁应用完成"
 
       - name: 🔧 Set gki_defconfig (设置编译配置)
-        env:
-          ENABLE_B: ${{ github.event.inputs.enable_feature_b }}       
         run: |
           cd kernel_workspace/kernel_platform
           DEFCONFIG="./common/arch/arm64/configs/gki_defconfig"
           
-          # 确保配置文件存在
           if [ ! -f "$DEFCONFIG" ]; then
             echo "::error ::未找到gki_defconfig文件: $DEFCONFIG"
             exit 1
           fi
           
-          # 配置KSU基础选项
+          # KSU基础配置
           echo "添加KSU基础配置"
           echo "CONFIG_KSU=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> "$DEFCONFIG"
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$DEFCONFIG"
           echo "CONFIG_KPM=y" >> "$DEFCONFIG"
           
-          # 配置压缩算法支持
+          # 压缩算法配置
           echo "添加压缩算法配置"
           echo "CONFIG_CRYPTO_LZ4=y" >> "$DEFCONFIG"
           echo "CONFIG_CRYPTO_LZ4HC=y" >> "$DEFCONFIG"
           echo "CONFIG_CRYPTO_LZ4KD=y" >> "$DEFCONFIG"
           echo "CONFIG_CRYPTO_ZSTD=y" >> "$DEFCONFIG"
           
-          # 修复原配置中的拼写错误（defconfi → defconfig）
+          # F2FS配置
           echo "CONFIG_F2FS_FS_COMPRESSION=y" >> "$DEFCONFIG"
           echo "CONFIG_F2FS_FS_LZ4=y" >> "$DEFCONFIG"
           echo "CONFIG_F2FS_FS_LZ4HC=y" >> "$DEFCONFIG"
           echo "CONFIG_F2FS_FS_ZSTD=y" >> "$DEFCONFIG"
           echo "CONFIG_KERNEL_LZ4=y" >> "$DEFCONFIG"
           
-          # 配置SUSFS功能
+          # SUSFS功能配置
           echo "添加SUSFS配置"
           echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> "$DEFCONFIG"
@@ -402,8 +412,7 @@ jobs:
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
           
-          
-          # 移除check_defconfig检查（纯文本替换）
+          # 移除check_defconfig检查
           echo "移除check_defconfig检查"
           sed -i 's/check_defconfig//g' ./common/build.config.gki
 
@@ -421,11 +430,7 @@ jobs:
             if [ -n "$CUSTOM_SUFFIX" ]; then
               DEFAULT_SUFFIX="$CUSTOM_SUFFIX"
               echo "使用自定义内核名称: $DEFAULT_SUFFIX"
-            else
-              echo "使用机型默认内核名称: $DEFAULT_SUFFIX"
             fi
-          else
-            echo "保持原内核名称设置"
           fi
           ESCAPED_SUFFIX=$(printf '%s\n' "$DEFAULT_SUFFIX" | sed 's:[\/&]:\\&:g')
           sudo sed -i "s/-4k/$ESCAPED_SUFFIX/g" ./common/arch/arm64/configs/gki_defconfig
