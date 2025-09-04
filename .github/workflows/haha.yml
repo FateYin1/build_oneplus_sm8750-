@@ -266,7 +266,7 @@ jobs:
 
       - name: 🔧 Set up SUSFS (配置 SUSFS)
         run: |
-           cd kernel_workspace
+            cd kernel_workspace
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
             git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
             
@@ -307,9 +307,11 @@ jobs:
                     -e 's|+++ b/lib/|+++ b/lib/lz4/|g' \
                     "$LZ4_PATCH_FILE"
                 
-                # 验证路径调整是否生效
-                if ! grep -q "--- a/lib/lz4/lz4.c" "$LZ4_PATCH_FILE"; then
-                    echo "::error ::补丁路径调整失败"
+                # 关键修复：添加--分隔符，避免grep将---识别为选项
+                echo "验证补丁路径调整结果..."
+                if ! grep -q -- "--- a/lib/lz4/lz4.c" "$LZ4_PATCH_FILE"; then
+                    echo "::error ::补丁路径调整失败，未找到预期路径"
+                    cat "$LZ4_PATCH_FILE" | head -n 20  # 输出前20行用于调试
                     exit 1
                 fi
                 
